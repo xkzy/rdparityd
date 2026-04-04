@@ -241,3 +241,60 @@ func TestRebuildEndpointRestoresMissingDataDiskExtent(t *testing.T) {
 		t.Fatalf("expected extents_rebuilt=1, got %#v", body["extents_rebuilt"])
 	}
 }
+
+func TestRebuildAllEndpointRestoresMultipleDisks(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/http-rebuild-all.bin",
+		SizeBytes:   (3 << 20) + 99,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	usedDisks := make(map[string]bool)
+	usedGroups := make(map[string]bool)
+	removed := 0
+	for _, extent := range writeResult.Extents {
+		if usedDisks[extent.DataDiskID] || usedGroups[extent.ParityGroupID] {
+			continue
+		}
+		extentPath := filepath.Join(filepath.Dir(metadataPath), extent.PhysicalLocator.RelativePath)
+		if err := os.Remove(extentPath); err != nil {
+			t.Fatalf("Remove returned error: %v", err)
+		}
+		usedDisks[extent.DataDiskID] = true
+		usedGroups[extent.ParityGroupID] = true
+		removed++
+	}
+	if removed < 2 {
+		t.Fatalf("expected recoverable missing extents across multiple disks, got %d", removed)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	req := httptest.NewRequest(http.MethodPost, "/v1/rebuild/all", nil)
+	rr := httptest.NewRecorder()
+	newMux(state).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body["healthy"] != true {
+		t.Fatalf("expected healthy=true, got %#v", body["healthy"])
+	}
+	if body["disks_rebuilt"] != float64(2) {
+		t.Fatalf("expected disks_rebuilt=2, got %#v", body["disks_rebuilt"])
+	}
+	if body["extents_rebuilt"] != float64(2) {
+		t.Fatalf("expected extents_rebuilt=2, got %#v", body["extents_rebuilt"])
+	}
+}

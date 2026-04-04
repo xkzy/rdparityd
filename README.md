@@ -53,6 +53,7 @@ go run ./cmd/rtpctl read-demo
 go run ./cmd/rtpctl scrub-demo
 go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
+go run ./cmd/rtpctl rebuild-all-demo
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
@@ -62,6 +63,7 @@ curl "http://127.0.0.1:8080/v1/read?path=/shares/demo/write.bin"
 curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
 curl http://127.0.0.1:8080/v1/scrub/history
 curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
+curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 ```
 
 ## Prototype commands
@@ -131,6 +133,13 @@ Or via the daemon API:
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
+```
+
+### Rebuild all data disks with missing extents
+
+```bash
+go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.json
+curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 ```
 
 ### Simulate a crash after `data-written`

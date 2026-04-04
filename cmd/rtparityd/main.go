@@ -250,6 +250,26 @@ func newMux(state runtimeState) *http.ServeMux {
 		writeJSON(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("/v1/rebuild/all", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+				"error": "method not allowed",
+			})
+			return
+		}
+
+		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).RebuildAllDataDisks()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	mux.HandleFunc("/v1/rebuild", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			w.Header().Set("Allow", "GET, POST")

@@ -39,6 +39,8 @@ func main() {
 		err = runScrubHistory(os.Args[2:])
 	case "rebuild-demo":
 		err = runRebuildDemo(os.Args[2:])
+	case "rebuild-all-demo":
+		err = runRebuildAllDemo(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -63,6 +65,7 @@ Usage:
   rtpctl scrub-demo [flags]
   rtpctl scrub-history [flags]
   rtpctl rebuild-demo [flags]
+  rtpctl rebuild-all-demo [flags]
 `)
 }
 
@@ -282,6 +285,24 @@ func runRebuildDemo(args []string) error {
 	}
 
 	result, err := journal.NewCoordinator(*metadataPath, *journalPath).RebuildDataDisk(*diskID)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+func runRebuildAllDemo(args []string) error {
+	fs := flag.NewFlagSet("rebuild-all-demo", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	result, err := journal.NewCoordinator(*metadataPath, *journalPath).RebuildAllDataDisks()
 	if err != nil {
 		return err
 	}

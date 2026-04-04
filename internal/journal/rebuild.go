@@ -29,6 +29,16 @@ type RebuildResult struct {
 	Issues           []RebuildIssue `json:"issues,omitempty"`
 }
 
+type RebuildAllResult struct {
+	StartedAt      time.Time       `json:"started_at"`
+	CompletedAt    time.Time       `json:"completed_at"`
+	Healthy        bool            `json:"healthy"`
+	DisksRebuilt   int             `json:"disks_rebuilt"`
+	ExtentsRebuilt int             `json:"extents_rebuilt"`
+	FailedCount    int             `json:"failed_count"`
+	Results        []RebuildResult `json:"results"`
+}
+
 func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 	result := RebuildResult{
 		StartedAt: time.Now().UTC(),
@@ -46,8 +56,59 @@ func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
+	return rebuildDiskFromState(c.metadataPath, state, result)
+}
 
-	rootDir := filepath.Dir(c.metadataPath)
+func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
+	result := RebuildAllResult{
+		StartedAt: time.Now().UTC(),
+		Healthy:   true,
+	}
+	if c == nil {
+		return result, fmt.Errorf("coordinator is nil")
+	}
+
+	state, err := c.metadata.Load()
+	if err != nil {
+		return result, fmt.Errorf("load metadata state: %w", err)
+	}
+
+	disks := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, extent := range state.Extents {
+		if extent.DataDiskID == "" || seen[extent.DataDiskID] {
+			continue
+		}
+		seen[extent.DataDiskID] = true
+		disks = append(disks, extent.DataDiskID)
+	}
+	sort.Strings(disks)
+	for _, diskID := range disks {
+		diskResult, err := rebuildDiskFromState(c.metadataPath, state, RebuildResult{
+			StartedAt: time.Now().UTC(),
+			DiskID:    diskID,
+			Healthy:   true,
+		})
+		if err != nil {
+			return result, err
+		}
+		result.Results = append(result.Results, diskResult)
+		result.ExtentsRebuilt += diskResult.ExtentsRebuilt
+		result.FailedCount += diskResult.FailedCount
+		if !diskResult.Healthy {
+			result.Healthy = false
+		}
+		if diskResult.ExtentsRebuilt > 0 {
+			result.DisksRebuilt++
+		}
+	}
+
+	result.CompletedAt = time.Now().UTC()
+	return result, nil
+}
+
+func rebuildDiskFromState(metadataPath string, state metadata.SampleState, result RebuildResult) (RebuildResult, error) {
+	rootDir := filepath.Dir(metadataPath)
 	extents := make([]metadata.Extent, 0)
 	for _, extent := range state.Extents {
 		if extent.DataDiskID == result.DiskID {

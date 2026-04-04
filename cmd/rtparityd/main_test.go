@@ -7,31 +7,37 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/rtparityd/rtparityd/internal/journal"
 )
 
-func TestLoadRuntimeStateMarksReplayRequired(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "journal.log")
-	store := journal.NewStore(path)
+func TestLoadRuntimeStateRollsForwardReplayRequiredWrite(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
-	entries := []journal.Record{
-		{TxID: "tx-replay", State: journal.StatePrepared, Timestamp: time.Unix(100, 0).UTC()},
-		{TxID: "tx-replay", State: journal.StateDataWritten, Timestamp: time.Unix(101, 0).UTC()},
+	result, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/startup-replay.bin",
+		SizeBytes:   4096,
+		FailAfter:   journal.StateDataWritten,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
 	}
-	for _, entry := range entries {
-		if _, err := store.Append(entry); err != nil {
-			t.Fatalf("Append returned error: %v", err)
-		}
+	if result.FinalState != journal.StateDataWritten {
+		t.Fatalf("expected data-written state, got %q", result.FinalState)
 	}
 
-	state := loadRuntimeState("demo", path, filepath.Join(t.TempDir(), "metadata.json"))
-	if state.healthStatus() != "degraded" {
-		t.Fatalf("expected degraded health, got %q", state.healthStatus())
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	if state.healthStatus() != "ok" {
+		t.Fatalf("expected startup replay to recover the pool, got %q", state.healthStatus())
 	}
-	if !state.JournalSummary.RequiresReplay {
-		t.Fatal("expected replay to be required")
+	if state.JournalSummary.RequiresReplay {
+		t.Fatalf("expected replay to be resolved, got %#v", state.JournalSummary)
+	}
+	if len(state.Prototype.Files) != 1 || len(state.Prototype.Extents) == 0 {
+		t.Fatalf("expected recovered metadata in runtime state, got files=%d extents=%d", len(state.Prototype.Files), len(state.Prototype.Extents))
 	}
 }
 

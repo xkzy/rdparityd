@@ -44,6 +44,7 @@ Current prototype rules:
 - Snapshot stored at a configurable path such as `/tmp/rtparityd/metadata.json`.
 - The saved state includes a `state_checksum` over the full metadata document.
 - Loads fail closed if the checksum does not match.
+- Journaled write demos now emit real extent files under `data/...` and parity files under `parity/` relative to the snapshot directory.
 - Metadata snapshots are still intended to be copied to each data disk under `/.rtparity/metadata-cache/` for later recovery workflows.
 
 ## Per-disk manifest

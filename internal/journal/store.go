@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/rtparityd/rtparityd/internal/metadata"
 )
 
 const (
@@ -19,16 +21,20 @@ const (
 )
 
 type Record struct {
-	Magic             string    `json:"magic"`
-	Version           int       `json:"version"`
-	TxID              string    `json:"tx_id"`
-	State             State     `json:"state"`
-	Timestamp         time.Time `json:"timestamp"`
-	OldGeneration     int64     `json:"old_generation,omitempty"`
-	NewGeneration     int64     `json:"new_generation,omitempty"`
-	AffectedExtentIDs []string  `json:"affected_extent_ids,omitempty"`
-	PayloadChecksum   string    `json:"payload_checksum"`
-	RecordChecksum    string    `json:"record_checksum"`
+	Magic             string               `json:"magic"`
+	Version           int                  `json:"version"`
+	TxID              string               `json:"tx_id"`
+	State             State                `json:"state"`
+	Timestamp         time.Time            `json:"timestamp"`
+	PoolName          string               `json:"pool_name,omitempty"`
+	LogicalPath       string               `json:"logical_path,omitempty"`
+	File              *metadata.FileRecord `json:"file,omitempty"`
+	Extents           []metadata.Extent    `json:"extents,omitempty"`
+	OldGeneration     int64                `json:"old_generation,omitempty"`
+	NewGeneration     int64                `json:"new_generation,omitempty"`
+	AffectedExtentIDs []string             `json:"affected_extent_ids,omitempty"`
+	PayloadChecksum   string               `json:"payload_checksum"`
+	RecordChecksum    string               `json:"record_checksum"`
 }
 
 type ReplayAction struct {
@@ -290,16 +296,24 @@ func withDefaults(record Record) Record {
 
 func payloadView(record Record) any {
 	return struct {
-		TxID              string    `json:"tx_id"`
-		State             State     `json:"state"`
-		Timestamp         time.Time `json:"timestamp"`
-		OldGeneration     int64     `json:"old_generation,omitempty"`
-		NewGeneration     int64     `json:"new_generation,omitempty"`
-		AffectedExtentIDs []string  `json:"affected_extent_ids,omitempty"`
+		TxID              string               `json:"tx_id"`
+		State             State                `json:"state"`
+		Timestamp         time.Time            `json:"timestamp"`
+		PoolName          string               `json:"pool_name,omitempty"`
+		LogicalPath       string               `json:"logical_path,omitempty"`
+		File              *metadata.FileRecord `json:"file,omitempty"`
+		Extents           []metadata.Extent    `json:"extents,omitempty"`
+		OldGeneration     int64                `json:"old_generation,omitempty"`
+		NewGeneration     int64                `json:"new_generation,omitempty"`
+		AffectedExtentIDs []string             `json:"affected_extent_ids,omitempty"`
 	}{
 		TxID:              record.TxID,
 		State:             record.State,
 		Timestamp:         record.Timestamp.UTC(),
+		PoolName:          record.PoolName,
+		LogicalPath:       record.LogicalPath,
+		File:              record.File,
+		Extents:           record.Extents,
 		OldGeneration:     record.OldGeneration,
 		NewGeneration:     record.NewGeneration,
 		AffectedExtentIDs: record.AffectedExtentIDs,
@@ -308,21 +322,29 @@ func payloadView(record Record) any {
 
 func envelopeView(record Record) any {
 	return struct {
-		Magic             string    `json:"magic"`
-		Version           int       `json:"version"`
-		TxID              string    `json:"tx_id"`
-		State             State     `json:"state"`
-		Timestamp         time.Time `json:"timestamp"`
-		OldGeneration     int64     `json:"old_generation,omitempty"`
-		NewGeneration     int64     `json:"new_generation,omitempty"`
-		AffectedExtentIDs []string  `json:"affected_extent_ids,omitempty"`
-		PayloadChecksum   string    `json:"payload_checksum"`
+		Magic             string               `json:"magic"`
+		Version           int                  `json:"version"`
+		TxID              string               `json:"tx_id"`
+		State             State                `json:"state"`
+		Timestamp         time.Time            `json:"timestamp"`
+		PoolName          string               `json:"pool_name,omitempty"`
+		LogicalPath       string               `json:"logical_path,omitempty"`
+		File              *metadata.FileRecord `json:"file,omitempty"`
+		Extents           []metadata.Extent    `json:"extents,omitempty"`
+		OldGeneration     int64                `json:"old_generation,omitempty"`
+		NewGeneration     int64                `json:"new_generation,omitempty"`
+		AffectedExtentIDs []string             `json:"affected_extent_ids,omitempty"`
+		PayloadChecksum   string               `json:"payload_checksum"`
 	}{
 		Magic:             record.Magic,
 		Version:           record.Version,
 		TxID:              record.TxID,
 		State:             record.State,
 		Timestamp:         record.Timestamp.UTC(),
+		PoolName:          record.PoolName,
+		LogicalPath:       record.LogicalPath,
+		File:              record.File,
+		Extents:           record.Extents,
 		OldGeneration:     record.OldGeneration,
 		NewGeneration:     record.NewGeneration,
 		AffectedExtentIDs: record.AffectedExtentIDs,

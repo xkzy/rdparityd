@@ -94,7 +94,8 @@ go run ./cmd/rtpctl write-demo
 go run ./cmd/rtpctl write-demo -fail-after data-written
 ```
 
-Then point the daemon at the emitted `metadata_path` and `journal_path` to inspect committed or replay-required state via the API.
+Then point the daemon at the emitted `metadata_path` and `journal_path`.
+The current prototype will automatically roll that interrupted write forward on startup when recovery is possible, and `/health` will report `recovered_transactions`.
 
 ## Next milestones
 

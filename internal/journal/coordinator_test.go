@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -42,6 +43,26 @@ func TestCoordinatorWriteFileCommitsMetadataAndJournal(t *testing.T) {
 	if len(state.Files) != 1 || len(state.Extents) != 2 {
 		t.Fatalf("unexpected state sizes: files=%d extents=%d", len(state.Files), len(state.Extents))
 	}
+	for _, extent := range result.Extents {
+		if extent.Checksum == "" {
+			t.Fatalf("expected checksum for extent %s", extent.ExtentID)
+		}
+		if _, err := os.Stat(filepath.Join(filepath.Dir(metadataPath), extent.PhysicalLocator.RelativePath)); err != nil {
+			t.Fatalf("expected extent file %s to exist: %v", extent.PhysicalLocator.RelativePath, err)
+		}
+	}
+	if len(state.ParityGroups) == 0 {
+		t.Fatal("expected at least one parity group to be persisted")
+	}
+	for _, group := range state.ParityGroups {
+		if group.ParityChecksum == "" {
+			t.Fatalf("expected parity checksum for group %s", group.ParityGroupID)
+		}
+		parityPath := filepath.Join(filepath.Dir(metadataPath), "parity", group.ParityGroupID+".bin")
+		if _, err := os.Stat(parityPath); err != nil {
+			t.Fatalf("expected parity file %s to exist: %v", parityPath, err)
+		}
+	}
 }
 
 func TestCoordinatorWriteFileCanStopBeforeCommit(t *testing.T) {
@@ -76,5 +97,59 @@ func TestCoordinatorWriteFileCanStopBeforeCommit(t *testing.T) {
 	}
 	if len(state.Files) != 0 || len(state.Extents) != 0 {
 		t.Fatalf("expected metadata snapshot to remain unchanged before metadata-written stage, got files=%d extents=%d", len(state.Files), len(state.Extents))
+	}
+	for _, extent := range result.Extents {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(metadataPath), extent.PhysicalLocator.RelativePath)); err != nil {
+			t.Fatalf("expected data-written extent file %s to exist: %v", extent.PhysicalLocator.RelativePath, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(metadataPath), "parity", "pg-000001.bin")); err == nil {
+		t.Fatal("did not expect parity file before parity-written stage")
+	}
+}
+
+func TestCoordinatorRecoverRollsForwardDataWrittenTransaction(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := NewCoordinator(metadataPath, journalPath)
+
+	result, err := coordinator.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/recover.bin",
+		SizeBytes:   (1 << 20) + 99,
+		FailAfter:   StateDataWritten,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if result.FinalState != StateDataWritten {
+		t.Fatalf("expected data-written final state, got %q", result.FinalState)
+	}
+
+	recovery, err := coordinator.Recover()
+	if err != nil {
+		t.Fatalf("Recover returned error: %v", err)
+	}
+	if len(recovery.RecoveredTxIDs) != 1 {
+		t.Fatalf("expected exactly one recovered tx, got %#v", recovery.RecoveredTxIDs)
+	}
+
+	summary, err := NewStore(journalPath).Replay()
+	if err != nil {
+		t.Fatalf("Replay returned error: %v", err)
+	}
+	if summary.RequiresReplay {
+		t.Fatalf("expected clean journal after recovery, got %#v", summary)
+	}
+
+	state, err := metadata.NewStore(metadataPath).Load()
+	if err != nil {
+		t.Fatalf("metadata load returned error: %v", err)
+	}
+	if len(state.Files) != 1 || len(state.Extents) != len(result.Extents) {
+		t.Fatalf("expected recovered metadata to contain the written file and extents, got files=%d extents=%d", len(state.Files), len(state.Extents))
+	}
+	if len(state.ParityGroups) == 0 || state.ParityGroups[0].ParityChecksum == "" {
+		t.Fatalf("expected parity metadata after recovery, got %#v", state.ParityGroups)
 	}
 }

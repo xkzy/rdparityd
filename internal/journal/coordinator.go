@@ -4,6 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rtparityd/rtparityd/internal/metadata"
@@ -86,9 +89,14 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		Extents:      extents,
 	}
 
+	fileCopy := file
 	baseRecord := Record{
 		TxID:              txID,
 		Timestamp:         startedAt,
+		PoolName:          req.PoolName,
+		LogicalPath:       req.LogicalPath,
+		File:              &fileCopy,
+		Extents:           extents,
 		OldGeneration:     oldGeneration,
 		NewGeneration:     newGeneration,
 		AffectedExtentIDs: affectedExtentIDs,
@@ -103,6 +111,9 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 
 	applyExtentChecksums(&state, extents, txID, req.LogicalPath)
+	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents); err != nil {
+		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
+	}
 	result.Extents = extents
 	if _, err := c.journal.Append(withState(baseRecord, StateDataWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append data-written record: %w", err)
@@ -114,6 +125,9 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 
 	mergeParityGroups(&state, extents)
+	if err := writeParityFiles(filepath.Dir(c.metadataPath), &state, extents); err != nil {
+		return WriteResult{}, fmt.Errorf("write parity files: %w", err)
+	}
 	if _, err := c.journal.Append(withState(baseRecord, StateParityWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append parity-written record: %w", err)
 	}
@@ -213,4 +227,74 @@ func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 		}
 		group.Generation = extent.Generation
 	}
+}
+
+func writeExtentFiles(rootDir string, extents []metadata.Extent) error {
+	for _, extent := range extents {
+		targetPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
+		}
+
+		payload := strings.Repeat(extent.ExtentID+"|", int((extent.Length/16)+1))
+		data := []byte(payload)
+		if int64(len(data)) > extent.Length {
+			data = data[:extent.Length]
+		} else if int64(len(data)) < extent.Length {
+			padding := make([]byte, extent.Length-int64(len(data)))
+			data = append(data, padding...)
+		}
+
+		if err := os.WriteFile(targetPath, data, 0o600); err != nil {
+			return fmt.Errorf("write extent file %s: %w", targetPath, err)
+		}
+	}
+	return nil
+}
+
+func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent) error {
+	if len(extents) == 0 {
+		return nil
+	}
+	if state == nil {
+		return fmt.Errorf("state is nil")
+	}
+
+	parityDir := filepath.Join(rootDir, "parity")
+	if err := os.MkdirAll(parityDir, 0o755); err != nil {
+		return fmt.Errorf("create parity directory: %w", err)
+	}
+
+	groups := make(map[string][]metadata.Extent)
+	for _, extent := range state.Extents {
+		for _, target := range extents {
+			if extent.ParityGroupID == target.ParityGroupID {
+				groups[extent.ParityGroupID] = append(groups[extent.ParityGroupID], extent)
+				break
+			}
+		}
+	}
+
+	for groupID, members := range groups {
+		hasher := sha256.New()
+		for _, member := range members {
+			contentPath := filepath.Join(rootDir, member.PhysicalLocator.RelativePath)
+			data, err := os.ReadFile(contentPath)
+			if err != nil {
+				return fmt.Errorf("read extent file %s for parity: %w", contentPath, err)
+			}
+			_, _ = hasher.Write(data)
+		}
+		parityChecksum := hex.EncodeToString(hasher.Sum(nil))
+		parityPath := filepath.Join(parityDir, groupID+".bin")
+		if err := os.WriteFile(parityPath, []byte(parityChecksum), 0o600); err != nil {
+			return fmt.Errorf("write parity file %s: %w", parityPath, err)
+		}
+		for i := range state.ParityGroups {
+			if state.ParityGroups[i].ParityGroupID == groupID {
+				state.ParityGroups[i].ParityChecksum = parityChecksum
+			}
+		}
+	}
+	return nil
 }

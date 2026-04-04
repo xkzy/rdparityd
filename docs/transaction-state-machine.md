@@ -60,7 +60,15 @@ The prototype daemon now inspects the configured journal file during boot and ex
 - `GET /health`
 - `GET /v1/journal`
 
-If incomplete transactions are found, the daemon reports `status: "degraded"` and includes replay guidance in the returned summary.
+If an interrupted write can be safely rolled forward, startup recovery now:
+
+1. restores or verifies the data extents,
+2. regenerates parity,
+3. persists the metadata snapshot,
+4. appends the final commit marker,
+5. returns the pool to `status: "ok"`.
+
+If a transaction cannot be safely completed, the daemon continues to report replay guidance and a degraded state.
 
 ## Operator rule
 

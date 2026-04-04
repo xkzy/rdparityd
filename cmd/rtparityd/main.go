@@ -12,12 +12,13 @@ import (
 )
 
 type runtimeState struct {
-	StartedAt      time.Time             `json:"started_at"`
-	Prototype      metadata.SampleState  `json:"prototype"`
-	MetadataPath   string                `json:"metadata_path"`
-	JournalPath    string                `json:"journal_path"`
-	JournalSummary journal.ReplaySummary `json:"journal_summary"`
-	StartupError   string                `json:"startup_error,omitempty"`
+	StartedAt      time.Time              `json:"started_at"`
+	Prototype      metadata.SampleState   `json:"prototype"`
+	MetadataPath   string                 `json:"metadata_path"`
+	JournalPath    string                 `json:"journal_path"`
+	Recovery       journal.RecoveryResult `json:"recovery"`
+	JournalSummary journal.ReplaySummary  `json:"journal_summary"`
+	StartupError   string                 `json:"startup_error,omitempty"`
 }
 
 func main() {
@@ -32,8 +33,14 @@ func main() {
 		log.Printf("startup inspection reported errors: %s", state.StartupError)
 	} else {
 		log.Printf("loaded metadata snapshot %s with %d file(s) and %d extent(s)", state.MetadataPath, len(state.Prototype.Files), len(state.Prototype.Extents))
+		if len(state.Recovery.RecoveredTxIDs) > 0 {
+			log.Printf("startup replay recovered %d transaction(s): %v", len(state.Recovery.RecoveredTxIDs), state.Recovery.RecoveredTxIDs)
+		}
+		if len(state.Recovery.AbortedTxIDs) > 0 {
+			log.Printf("startup replay aborted %d transaction(s): %v", len(state.Recovery.AbortedTxIDs), state.Recovery.AbortedTxIDs)
+		}
 		if state.JournalSummary.RequiresReplay {
-			log.Printf("journal replay required for %d transaction(s): %v", len(state.JournalSummary.IncompleteTxIDs), state.JournalSummary.IncompleteTxIDs)
+			log.Printf("journal replay still required for %d transaction(s): %v", len(state.JournalSummary.IncompleteTxIDs), state.JournalSummary.IncompleteTxIDs)
 		} else {
 			log.Printf("journal clean at %s with %d record(s)", state.JournalPath, state.JournalSummary.TotalRecords)
 		}
@@ -51,6 +58,13 @@ func loadRuntimeState(poolName, journalPath, metadataPath string) runtimeState {
 		Prototype:    metadata.PrototypeState(poolName),
 		MetadataPath: metadataPath,
 		JournalPath:  journalPath,
+	}
+
+	recovery, err := journal.NewCoordinator(metadataPath, journalPath).RecoverWithState(metadata.PrototypeState(poolName))
+	if err != nil {
+		state.StartupError = joinStartupError(state.StartupError, "recovery: "+err.Error())
+	} else {
+		state.Recovery = recovery
 	}
 
 	loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName))
@@ -99,6 +113,7 @@ func newMux(state runtimeState) *http.ServeMux {
 			"metadata_path":           state.MetadataPath,
 			"managed_files":           len(state.Prototype.Files),
 			"allocated_extents":       len(state.Prototype.Extents),
+			"recovered_transactions":  len(state.Recovery.RecoveredTxIDs),
 			"journal_path":            state.JournalPath,
 			"journal_records":         state.JournalSummary.TotalRecords,
 			"journal_requires_replay": state.JournalSummary.RequiresReplay,
@@ -127,6 +142,7 @@ func newMux(state runtimeState) *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"journal_path":  state.JournalPath,
 			"status":        state.healthStatus(),
+			"recovery":      state.Recovery,
 			"summary":       state.JournalSummary,
 			"startup_error": state.StartupError,
 		})

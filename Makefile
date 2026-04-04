@@ -1,4 +1,4 @@
-.PHONY: fmt test run-sim run-journal run-allocate run-api
+.PHONY: fmt test run-sim run-journal run-allocate run-write run-api
 
 fmt:
 	gofmt -w ./cmd ./internal
@@ -14,6 +14,9 @@ run-journal:
 
 run-allocate:
 	go run ./cmd/rtpctl allocate-demo
+
+run-write:
+	go run ./cmd/rtpctl write-demo
 
 run-api:
 	go run ./cmd/rtparityd -listen :8080

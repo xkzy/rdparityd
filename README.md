@@ -48,6 +48,7 @@ go run ./cmd/rtpctl simulate \
   -corrupt-extent 2
 
 go run ./cmd/rtpctl allocate-demo
+go run ./cmd/rtpctl write-demo
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
@@ -81,7 +82,19 @@ go run ./cmd/rtpctl journal-demo
 go run ./cmd/rtpctl allocate-demo
 ```
 
-Then point the daemon at that metadata file to inspect the allocated files and extents via the API.
+### Execute a full journaled write transaction
+
+```bash
+go run ./cmd/rtpctl write-demo
+```
+
+### Simulate a crash after `data-written`
+
+```bash
+go run ./cmd/rtpctl write-demo -fail-after data-written
+```
+
+Then point the daemon at the emitted `metadata_path` and `journal_path` to inspect committed or replay-required state via the API.
 
 ## Next milestones
 

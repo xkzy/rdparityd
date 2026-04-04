@@ -138,6 +138,8 @@ func newMux(state runtimeState) *http.ServeMux {
 			"status":        state.healthStatus(),
 			"files":         state.Prototype.Files,
 			"extents":       state.Prototype.Extents,
+			"parity_groups": state.Prototype.ParityGroups,
+			"transactions":  state.Prototype.Transactions,
 			"startup_error": state.StartupError,
 		})
 	})

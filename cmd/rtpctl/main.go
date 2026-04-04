@@ -29,6 +29,8 @@ func main() {
 		err = runJournalDemo()
 	case "allocate-demo":
 		err = runAllocateDemo(os.Args[2:])
+	case "write-demo":
+		err = runWriteDemo(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -48,6 +50,7 @@ Usage:
   rtpctl sample-pool
   rtpctl journal-demo
   rtpctl allocate-demo [flags]
+  rtpctl write-demo [flags]
 `)
 }
 
@@ -159,5 +162,41 @@ func runAllocateDemo(args []string) error {
 		"extents":        extents,
 		"managed_files":  len(state.Files),
 		"total_extents":  len(state.Extents),
+	})
+}
+
+func runWriteDemo(args []string) error {
+	fs := flag.NewFlagSet("write-demo", flag.ContinueOnError)
+	poolName := fs.String("pool-name", "demo", "prototype pool name")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-metadata-%d.json", time.Now().UnixNano())), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-journal-%d.log", time.Now().UnixNano())), "journal log path")
+	filePath := fs.String("path", "/shares/demo/write.bin", "logical file path to write")
+	sizeBytes := fs.Int64("size-bytes", 2*(1<<20)+123, "file size in bytes")
+	failAfter := fs.String("fail-after", "", "optional stop stage: prepared|data-written|parity-written|metadata-written")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	coordinator := journal.NewCoordinator(*metadataPath, *journalPath)
+	result, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    *poolName,
+		LogicalPath: *filePath,
+		SizeBytes:   *sizeBytes,
+		FailAfter:   journal.State(*failAfter),
+	})
+	if err != nil {
+		return err
+	}
+
+	summary, err := journal.NewStore(*journalPath).Replay()
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"result":  result,
+		"summary": summary,
 	})
 }

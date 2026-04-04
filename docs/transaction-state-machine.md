@@ -16,7 +16,8 @@ The current Go prototype now includes:
 - durable `Store.Append()` writes with `fsync`,
 - checksum-validated reloads via `Store.Load()`,
 - replay summarization via `Store.Replay()` and `ReplayRecords()`,
-- a runnable demo with `go run ./cmd/rtpctl journal-demo`.
+- a journaled write coordinator that allocates extents and persists metadata,
+- runnable demos with `go run ./cmd/rtpctl journal-demo` and `go run ./cmd/rtpctl write-demo`.
 
 ## Meaning of each state
 

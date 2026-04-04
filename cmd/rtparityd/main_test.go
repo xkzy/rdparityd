@@ -161,3 +161,44 @@ func TestScrubEndpointReturnsRepairSummary(t *testing.T) {
 		t.Fatalf("expected healed_count=1, got %#v", body["healed_count"])
 	}
 }
+
+func TestRebuildEndpointRestoresMissingDataDiskExtent(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/http-rebuild.bin",
+		SizeBytes:   (1 << 20) + 64,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	targetExtent := writeResult.Extents[0]
+	extentPath := filepath.Join(filepath.Dir(metadataPath), targetExtent.PhysicalLocator.RelativePath)
+	if err := os.Remove(extentPath); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	req := httptest.NewRequest(http.MethodPost, "/v1/rebuild?disk="+targetExtent.DataDiskID, nil)
+	rr := httptest.NewRecorder()
+	newMux(state).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body["healthy"] != true {
+		t.Fatalf("expected healthy=true, got %#v", body["healthy"])
+	}
+	if body["extents_rebuilt"] != float64(1) {
+		t.Fatalf("expected extents_rebuilt=1, got %#v", body["extents_rebuilt"])
+	}
+}

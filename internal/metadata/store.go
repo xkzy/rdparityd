@@ -165,18 +165,20 @@ func (a *Allocator) AllocateFile(path string, sizeBytes int64) (FileRecord, []Ex
 	remaining := sizeBytes
 	logicalOffset := int64(0)
 	extents := make([]Extent, 0)
+	groupWidth := a.parityGroupWidth()
 	for remaining > 0 {
 		allocationLength := extentSize
 		if remaining < allocationLength {
 			allocationLength = remaining
 		}
 
-		diskIndex, err := a.chooseDisk(extents)
+		extentNumber := len(a.state.Extents) + len(extents) + 1
+		parityGroupID := fmt.Sprintf("pg-%06d", ((extentNumber-1)/groupWidth)+1)
+		diskIndex, err := a.chooseDisk(extents, parityGroupID)
 		if err != nil {
 			return FileRecord{}, nil, err
 		}
 
-		extentNumber := len(a.state.Extents) + len(extents) + 1
 		extentID := fmt.Sprintf("extent-%06d", extentNumber)
 		relativePath := extentRelativePath(path, extentNumber)
 		extent := Extent{
@@ -193,7 +195,7 @@ func (a *Allocator) AllocateFile(path string, sizeBytes int64) (FileRecord, []Ex
 			Checksum:      "",
 			ChecksumAlg:   "blake3",
 			Generation:    1,
-			ParityGroupID: fmt.Sprintf("pg-%06d", ((extentNumber-1)/8)+1),
+			ParityGroupID: parityGroupID,
 			State:         ExtentStateAllocated,
 		}
 		if a.state.Disks[diskIndex].FreeBytes < allocationLength {
@@ -210,7 +212,7 @@ func (a *Allocator) AllocateFile(path string, sizeBytes int64) (FileRecord, []Ex
 	return file, extents, nil
 }
 
-func (a *Allocator) chooseDisk(pending []Extent) (int, error) {
+func (a *Allocator) chooseDisk(pending []Extent, parityGroupID string) (int, error) {
 	eligible := make([]int, 0)
 	for i, disk := range a.state.Disks {
 		if disk.Role != DiskRoleData {
@@ -228,16 +230,37 @@ func (a *Allocator) chooseDisk(pending []Extent) (int, error) {
 	}
 
 	counts := make(map[string]int)
+	usedInGroup := make(map[string]bool)
 	for _, extent := range a.state.Extents {
 		counts[extent.DataDiskID]++
+		if extent.ParityGroupID == parityGroupID {
+			usedInGroup[extent.DataDiskID] = true
+		}
 	}
 	for _, extent := range pending {
 		counts[extent.DataDiskID]++
+		if extent.ParityGroupID == parityGroupID {
+			usedInGroup[extent.DataDiskID] = true
+		}
 	}
 
-	sort.SliceStable(eligible, func(i, j int) bool {
-		left := a.state.Disks[eligible[i]]
-		right := a.state.Disks[eligible[j]]
+	preferred := make([]int, 0, len(eligible))
+	fallback := make([]int, 0, len(eligible))
+	for _, idx := range eligible {
+		if usedInGroup[a.state.Disks[idx].DiskID] {
+			fallback = append(fallback, idx)
+			continue
+		}
+		preferred = append(preferred, idx)
+	}
+	candidates := preferred
+	if len(candidates) == 0 {
+		candidates = fallback
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		left := a.state.Disks[candidates[i]]
+		right := a.state.Disks[candidates[j]]
 		if counts[left.DiskID] == counts[right.DiskID] {
 			if left.FreeBytes == right.FreeBytes {
 				return left.DiskID < right.DiskID
@@ -247,7 +270,27 @@ func (a *Allocator) chooseDisk(pending []Extent) (int, error) {
 		return counts[left.DiskID] < counts[right.DiskID]
 	})
 
-	return eligible[0], nil
+	return candidates[0], nil
+}
+
+func (a *Allocator) parityGroupWidth() int {
+	if a == nil || a.state == nil {
+		return 1
+	}
+
+	count := 0
+	for _, disk := range a.state.Disks {
+		if disk.Role == DiskRoleData && strings.ToLower(disk.HealthStatus) == "online" && disk.FreeBytes > 0 {
+			count++
+		}
+	}
+	if count <= 0 {
+		return 1
+	}
+	if count > 8 {
+		return 8
+	}
+	return count
 }
 
 func extentRelativePath(path string, extentNumber int) string {

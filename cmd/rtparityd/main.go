@@ -224,6 +224,39 @@ func newMux(state runtimeState) *http.ServeMux {
 		writeJSON(w, http.StatusOK, result)
 	})
 
+	mux.HandleFunc("/v1/rebuild", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+				"error": "method not allowed",
+			})
+			return
+		}
+
+		diskID := strings.TrimSpace(r.URL.Query().Get("disk"))
+		if diskID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "missing required query parameter: disk",
+			})
+			return
+		}
+
+		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).RebuildDataDisk(diskID)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "no extents mapped") {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]any{
+				"disk":  diskID,
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	return mux
 }
 

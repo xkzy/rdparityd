@@ -35,6 +35,8 @@ func main() {
 		err = runReadDemo(os.Args[2:])
 	case "scrub-demo":
 		err = runScrubDemo(os.Args[2:])
+	case "rebuild-demo":
+		err = runRebuildDemo(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -57,6 +59,7 @@ Usage:
   rtpctl write-demo [flags]
   rtpctl read-demo [flags]
   rtpctl scrub-demo [flags]
+  rtpctl rebuild-demo [flags]
 `)
 }
 
@@ -236,6 +239,25 @@ func runScrubDemo(args []string) error {
 	}
 
 	result, err := journal.NewCoordinator(*metadataPath, *journalPath).Scrub(*repair)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+func runRebuildDemo(args []string) error {
+	fs := flag.NewFlagSet("rebuild-demo", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	diskID := fs.String("disk", "disk-01", "data disk id to rebuild from parity")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	result, err := journal.NewCoordinator(*metadataPath, *journalPath).RebuildDataDisk(*diskID)
 	if err != nil {
 		return err
 	}

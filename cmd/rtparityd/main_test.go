@@ -116,3 +116,48 @@ func TestReadEndpointReturnsVerificationResult(t *testing.T) {
 		t.Fatalf("expected verified=true, got %#v", body["verified"])
 	}
 }
+
+func TestScrubEndpointReturnsRepairSummary(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/http-scrub.bin",
+		SizeBytes:   4096,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	extentPath := filepath.Join(filepath.Dir(metadataPath), writeResult.Extents[0].PhysicalLocator.RelativePath)
+	corrupted, err := os.ReadFile(extentPath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	corrupted[0] ^= 0xFF
+	if err := os.WriteFile(extentPath, corrupted, 0o600); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	req := httptest.NewRequest(http.MethodPost, "/v1/scrub?repair=true", nil)
+	rr := httptest.NewRecorder()
+	newMux(state).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body["healthy"] != true {
+		t.Fatalf("expected healthy=true, got %#v", body["healthy"])
+	}
+	if body["healed_count"] != float64(1) {
+		t.Fatalf("expected healed_count=1, got %#v", body["healed_count"])
+	}
+}

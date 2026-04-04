@@ -82,6 +82,10 @@ func findFileExtents(state metadata.SampleState, logicalPath string) (metadata.F
 }
 
 func readVerifiedExtent(rootDir string, state metadata.SampleState, extent metadata.Extent) ([]byte, bool, error) {
+	return verifyExtent(rootDir, state, extent, true)
+}
+
+func verifyExtent(rootDir string, state metadata.SampleState, extent metadata.Extent, repair bool) ([]byte, bool, error) {
 	path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -89,6 +93,11 @@ func readVerifiedExtent(rootDir string, state metadata.SampleState, extent metad
 		if digestBytes(normalized) == extent.Checksum {
 			return normalized, false, nil
 		}
+		if !repair {
+			return nil, false, fmt.Errorf("extent checksum mismatch for %s", extent.ExtentID)
+		}
+	} else if !repair {
+		return nil, false, fmt.Errorf("read extent file: %w", err)
 	}
 
 	rebuilt, err := reconstructExtent(rootDir, state, extent)

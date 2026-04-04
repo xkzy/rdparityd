@@ -33,6 +33,8 @@ func main() {
 		err = runWriteDemo(os.Args[2:])
 	case "read-demo":
 		err = runReadDemo(os.Args[2:])
+	case "scrub-demo":
+		err = runScrubDemo(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -54,6 +56,7 @@ Usage:
   rtpctl allocate-demo [flags]
   rtpctl write-demo [flags]
   rtpctl read-demo [flags]
+  rtpctl scrub-demo [flags]
 `)
 }
 
@@ -214,6 +217,25 @@ func runReadDemo(args []string) error {
 	}
 
 	result, err := journal.NewCoordinator(*metadataPath, *journalPath).ReadFile(*filePath)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
+}
+
+func runScrubDemo(args []string) error {
+	fs := flag.NewFlagSet("scrub-demo", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	repair := fs.Bool("repair", true, "repair corrupted extents or parity when possible")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	result, err := journal.NewCoordinator(*metadataPath, *journalPath).Scrub(*repair)
 	if err != nil {
 		return err
 	}

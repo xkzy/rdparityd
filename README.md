@@ -50,12 +50,14 @@ go run ./cmd/rtpctl simulate \
 go run ./cmd/rtpctl allocate-demo
 go run ./cmd/rtpctl write-demo
 go run ./cmd/rtpctl read-demo
+go run ./cmd/rtpctl scrub-demo
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/v1/journal
 curl http://127.0.0.1:8080/v1/metadata
 curl "http://127.0.0.1:8080/v1/read?path=/shares/demo/write.bin"
+curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
 ```
 
 ## Prototype commands
@@ -94,6 +96,18 @@ go run ./cmd/rtpctl write-demo
 
 ```bash
 go run ./cmd/rtpctl read-demo -metadata-path /tmp/rtparityd-metadata.json -path /shares/demo/write.bin
+```
+
+### Scrub the full metadata snapshot for corruption
+
+```bash
+go run ./cmd/rtpctl scrub-demo -metadata-path /tmp/rtparityd-metadata.json -repair=true
+```
+
+Or via the daemon API:
+
+```bash
+curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
 ```
 
 ### Simulate a crash after `data-written`

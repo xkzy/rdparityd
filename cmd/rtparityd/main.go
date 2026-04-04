@@ -193,6 +193,37 @@ func newMux(state runtimeState) *http.ServeMux {
 		})
 	})
 
+	mux.HandleFunc("/v1/scrub", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+				"error": "method not allowed",
+			})
+			return
+		}
+
+		repairValue := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("repair")))
+		repair := repairValue == "true" || repairValue == "1" || (repairValue == "" && r.Method == http.MethodPost)
+
+		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).Scrub(repair)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"repair": repair,
+				"error":  err.Error(),
+			})
+			return
+		}
+
+		if loadedState, err := metadata.NewStore(state.MetadataPath).LoadOrCreate(metadata.PrototypeState(state.Prototype.Pool.Name)); err == nil {
+			state.Prototype = loadedState
+		}
+		if summary, err := journal.NewStore(state.JournalPath).Replay(); err == nil {
+			state.JournalSummary = summary
+		}
+
+		writeJSON(w, http.StatusOK, result)
+	})
+
 	return mux
 }
 

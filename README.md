@@ -181,7 +181,7 @@ The current prototype will automatically roll that interrupted write forward on 
 1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done (Phase 1)
 2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done (Phase 1)
 3. ~~Define and enforce storage invariants.~~ ✅ Done (Phase 2)
-4. Build crash-injection integration tests (Phase 4).
+4. ~~Build crash-injection integration tests (Phase 4).~~ ✅ Done (Phase 3)
 5. Introduce a FUSE proof of concept before any full UI work.
 
 ## Project pitch

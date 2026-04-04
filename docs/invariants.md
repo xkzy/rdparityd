@@ -1,4 +1,4 @@
-# rtparityd Storage Invariants
+# rdparityd Storage Invariants
 
 This document defines the invariants that **must always hold** at every stable
 point in the system's lifecycle. A "stable point" is any moment when no

@@ -11,9 +11,9 @@ import (
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
-// ChecksumAlgorithm is the name used in extent metadata to identify the
-// hash function applied to extent data and parity data.
-const ChecksumAlgorithm = "sha256"
+// ChecksumAlgorithm re-exports metadata.ChecksumAlgorithm for callers that
+// import only the journal package. Both constants refer to the same value.
+const ChecksumAlgorithm = metadata.ChecksumAlgorithm
 
 type WriteRequest struct {
 	PoolName    string `json:"pool_name"`

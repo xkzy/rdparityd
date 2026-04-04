@@ -2,6 +2,12 @@ package metadata
 
 import "time"
 
+// ChecksumAlgorithm is the hash function used for all extent and parity
+// checksums. It is defined here (in the metadata package) so that both the
+// journal layer and the allocator can reference it without creating a circular
+// import.
+const ChecksumAlgorithm = "sha256"
+
 type Pool struct {
 	PoolID          string    `json:"pool_id"`
 	Name            string    `json:"name"`

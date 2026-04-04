@@ -193,7 +193,7 @@ func (a *Allocator) AllocateFile(path string, sizeBytes int64) (FileRecord, []Ex
 				LengthBytes:  allocationLength,
 			},
 			Checksum:      "",
-			ChecksumAlg:   "blake3",
+			ChecksumAlg:   "sha256",
 			Generation:    1,
 			ParityGroupID: parityGroupID,
 			State:         ExtentStateAllocated,

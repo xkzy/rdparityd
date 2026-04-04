@@ -1,3 +1,3 @@
-module github.com/rtparityd/rtparityd
+module github.com/xkzy/rdparityd
 
 go 1.25

@@ -23,6 +23,7 @@ This repository is now a **Phase 0/1 prototype foundation**. It includes:
 | Data disk filesystems | **XFS / ext4** |
 | Metadata placement | **Dedicated SSD preferred** |
 | Metadata persistence | **Checksummed SQLite + per-disk cache** |
+| Checksum algorithm | **SHA-256** |
 
 ## Repository layout
 
@@ -96,6 +97,9 @@ go run ./cmd/rtpctl allocate-demo
 
 ```bash
 go run ./cmd/rtpctl write-demo
+
+# Write a real file's bytes (round-trips on read-demo):
+go run ./cmd/rtpctl write-demo -input-file /path/to/real.bin -path /shares/demo/real.bin
 ```
 
 ### Verify and self-heal a stored file on read

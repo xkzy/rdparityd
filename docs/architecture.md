@@ -12,6 +12,7 @@ This repository now contains a **Phase 0/1 CLI-first prototype** for `rtparityd`
 | Parity group width | **Up to 8 data extents + 1 parity extent** | Caps read-modify-write cost and keeps rebuild behavior understandable |
 | Metadata device | **Dedicated SSD preferred** | Separates random metadata/journal IO from bulk data IO |
 | Primary metadata store | **Checksummed SQLite + per-disk recovery cache** | Practical for the prototype while preserving a strong recovery model |
+| Checksum algorithm | **SHA-256** | Standard library, no external dependency; BLAKE3 is a future candidate once the write path matures |
 
 ## Core model
 

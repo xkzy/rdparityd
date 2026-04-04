@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 type RecoveryResult struct {
@@ -99,7 +99,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 
 	mergeRecoveredFile(state, *last.File, last.Extents)
 	rootDir := filepath.Dir(c.metadataPath)
-	if err := writeExtentFiles(rootDir, last.Extents); err != nil {
+	if err := writeExtentFiles(rootDir, last.Extents, nil); err != nil {
 		return fmt.Errorf("restore extent files during recovery: %w", err)
 	}
 

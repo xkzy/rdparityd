@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/journal"
-	"github.com/rtparityd/rtparityd/internal/metadata"
-	"github.com/rtparityd/rtparityd/internal/parity"
+	"github.com/xkzy/rdparityd/internal/journal"
+	"github.com/xkzy/rdparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/parity"
 )
 
 func main() {
@@ -186,19 +186,30 @@ func runWriteDemo(args []string) error {
 	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-metadata-%d.json", time.Now().UnixNano())), "metadata snapshot path")
 	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-journal-%d.log", time.Now().UnixNano())), "journal log path")
 	filePath := fs.String("path", "/shares/demo/write.bin", "logical file path to write")
-	sizeBytes := fs.Int64("size-bytes", 2*(1<<20)+123, "file size in bytes")
+	inputFile := fs.String("input-file", "", "path to a real file whose bytes will be written (overrides -size-bytes)")
+	sizeBytes := fs.Int64("size-bytes", 2*(1<<20)+123, "file size in bytes (synthetic data); ignored when -input-file is set")
 	failAfter := fs.String("fail-after", "", "optional stop stage: prepared|data-written|parity-written|metadata-written")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	coordinator := journal.NewCoordinator(*metadataPath, *journalPath)
-	result, err := coordinator.WriteFile(journal.WriteRequest{
+	req := journal.WriteRequest{
 		PoolName:    *poolName,
 		LogicalPath: *filePath,
 		SizeBytes:   *sizeBytes,
 		FailAfter:   journal.State(*failAfter),
-	})
+	}
+
+	if *inputFile != "" {
+		data, err := os.ReadFile(*inputFile)
+		if err != nil {
+			return fmt.Errorf("read input file: %w", err)
+		}
+		req.Payload = data
+	}
+
+	coordinator := journal.NewCoordinator(*metadataPath, *journalPath)
+	result, err := coordinator.WriteFile(req)
 	if err != nil {
 		return err
 	}

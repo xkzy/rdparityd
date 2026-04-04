@@ -4,11 +4,14 @@
 
 ## Status
 
-This repository is now a **Phase 0/1 prototype foundation**. It includes:
+This repository is now a **Phase 1/2 prototype foundation**. It includes:
 
 - a concrete architecture snapshot,
+- a formal invariants specification (`docs/invariants.md`),
+- an invariant checker (`internal/journal/invariants.go`) validated against code,
 - an initial on-disk metadata format,
 - a transaction failure/replay state machine,
+- a real write path that accepts user data (no more synthetic-only payloads),
 - a Go-based CLI-first scaffold,
 - a parity simulator with corruption injection and recovery tests.
 
@@ -33,7 +36,7 @@ cmd/rtpctl           CLI for simulation and sample pool state
 internal/journal     Transaction states and validation
 internal/metadata    Metadata schema types
 internal/parity      XOR parity simulator and tests
-docs/                Architecture and format decisions
+docs/                Architecture, format decisions, and invariant specification
 ```
 
 ## Quick start
@@ -55,6 +58,8 @@ go run ./cmd/rtpctl scrub-demo
 go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
 go run ./cmd/rtpctl rebuild-all-demo
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -full
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
@@ -146,6 +151,22 @@ go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.json
 curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 ```
 
+### Verify storage invariants
+
+Verify all structural invariants (in-memory, no disk IO):
+
+```bash
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log
+```
+
+Full integrity check including on-disk extent and parity data:
+
+```bash
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log -full
+```
+
+See `docs/invariants.md` for the full invariant specification.
+
 ### Simulate a crash after `data-written`
 
 ```bash
@@ -157,10 +178,11 @@ The current prototype will automatically roll that interrupted write forward on 
 
 ## Next milestones
 
-1. Persist the journal to disk and replay it on startup.
-2. Add an extent allocator and durable metadata store.
-3. Build crash-injection integration tests.
-4. Introduce a FUSE proof of concept before any full UI work.
+1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done (Phase 1)
+2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done (Phase 1)
+3. ~~Define and enforce storage invariants.~~ ✅ Done (Phase 2)
+4. Build crash-injection integration tests (Phase 4).
+5. Introduce a FUSE proof of concept before any full UI work.
 
 ## Project pitch
 

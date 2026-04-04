@@ -11,6 +11,10 @@ import (
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
+// ChecksumAlgorithm is the name used in extent metadata to identify the
+// hash function applied to extent data and parity data.
+const ChecksumAlgorithm = "sha256"
+
 type WriteRequest struct {
 	PoolName    string `json:"pool_name"`
 	LogicalPath string `json:"logical_path"`
@@ -199,7 +203,7 @@ func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent
 	for i := range state.Extents {
 		if checksum, ok := checksums[state.Extents[i].ExtentID]; ok {
 			state.Extents[i].Checksum = checksum
-			state.Extents[i].ChecksumAlg = "sha256"
+			state.Extents[i].ChecksumAlg = ChecksumAlgorithm
 		}
 	}
 }

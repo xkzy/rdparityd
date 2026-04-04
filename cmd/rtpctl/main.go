@@ -41,6 +41,8 @@ func main() {
 		err = runRebuildDemo(os.Args[2:])
 	case "rebuild-all-demo":
 		err = runRebuildAllDemo(os.Args[2:])
+	case "check-invariants":
+		err = runCheckInvariants(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -66,6 +68,7 @@ Usage:
   rtpctl scrub-history [flags]
   rtpctl rebuild-demo [flags]
   rtpctl rebuild-all-demo [flags]
+  rtpctl check-invariants [flags]
 `)
 }
 
@@ -321,4 +324,46 @@ func runRebuildAllDemo(args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
+}
+
+func runCheckInvariants(args []string) error {
+	fs := flag.NewFlagSet("check-invariants", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	full := fs.Bool("full", false, "also verify on-disk extent and parity data (requires IO)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	state, err := metadata.NewStore(*metadataPath).Load()
+	if err != nil {
+		return fmt.Errorf("load metadata: %w", err)
+	}
+
+	var stateViolations []journal.InvariantViolation
+	if *full {
+		stateViolations = journal.CheckIntegrityInvariants(filepath.Dir(*metadataPath), state)
+	} else {
+		stateViolations = journal.CheckStateInvariants(state)
+	}
+
+	records, err := journal.NewStore(*journalPath).Load()
+	if err != nil {
+		return fmt.Errorf("load journal: %w", err)
+	}
+	journalViolations := journal.CheckJournalInvariants(records)
+
+	all := append(stateViolations, journalViolations...)
+	healthy := len(all) == 0
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"metadata_path":   *metadataPath,
+		"journal_path":    *journalPath,
+		"full_integrity":  *full,
+		"healthy":         healthy,
+		"violation_count": len(all),
+		"violations":      all,
+	})
 }

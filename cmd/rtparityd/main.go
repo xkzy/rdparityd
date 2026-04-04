@@ -14,6 +14,9 @@ import (
 )
 
 type runtimeState struct {
+	// mu protects concurrent access to all mutable runtimeState fields.
+	// Handlers must hold mu.RLock for reads and mu.Lock for writes to
+	// Prototype and JournalSummary.
 	mu             sync.RWMutex
 	StartedAt      time.Time              `json:"started_at"`
 	Prototype      metadata.SampleState   `json:"prototype"`

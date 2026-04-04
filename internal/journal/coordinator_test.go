@@ -182,8 +182,8 @@ func TestCoordinatorWriteFileWithRealPayload(t *testing.T) {
 		if extent.Checksum == "" {
 			t.Fatalf("expected checksum for extent %s", extent.ExtentID)
 		}
-		if extent.ChecksumAlg != "sha256" {
-			t.Fatalf("expected sha256 checksum alg for extent %s, got %q", extent.ExtentID, extent.ChecksumAlg)
+		if extent.ChecksumAlg != ChecksumAlgorithm {
+			t.Fatalf("expected %s checksum alg for extent %s, got %q", ChecksumAlgorithm, extent.ExtentID, extent.ChecksumAlg)
 		}
 	}
 

@@ -34,6 +34,8 @@ type ScrubResult struct {
 	Issues               []ScrubIssue `json:"issues,omitempty"`
 }
 
+const maxScrubHistory = 32
+
 func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 	if c == nil {
 		return ScrubResult{}, fmt.Errorf("coordinator is nil")
@@ -142,13 +144,40 @@ func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 				Detail:        "regenerated from member extents",
 			})
 		}
-		if _, err := c.metadata.Save(state); err != nil {
-			return result, fmt.Errorf("save metadata snapshot after parity repair: %w", err)
-		}
 	}
 
 	result.CompletedAt = time.Now().UTC()
+	appendScrubHistory(&state, result)
+	if _, err := c.metadata.Save(state); err != nil {
+		return result, fmt.Errorf("save metadata snapshot after scrub: %w", err)
+	}
 	return result, nil
+}
+
+func appendScrubHistory(state *metadata.SampleState, result ScrubResult) {
+	if state == nil {
+		return
+	}
+
+	run := metadata.ScrubRun{
+		RunID:                fmt.Sprintf("scrub-%d", result.StartedAt.UnixNano()),
+		StartedAt:            result.StartedAt,
+		CompletedAt:          result.CompletedAt,
+		Repair:               result.Repair,
+		Healthy:              result.Healthy,
+		FilesChecked:         result.FilesChecked,
+		ExtentsChecked:       result.ExtentsChecked,
+		ParityGroupsChecked:  result.ParityGroupsChecked,
+		HealedCount:          result.HealedCount,
+		FailedCount:          result.FailedCount,
+		IssueCount:           len(result.Issues),
+		HealedExtentIDs:      append([]string(nil), result.HealedExtentIDs...),
+		HealedParityGroupIDs: append([]string(nil), result.HealedParityGroupIDs...),
+	}
+	state.ScrubHistory = append(state.ScrubHistory, run)
+	if len(state.ScrubHistory) > maxScrubHistory {
+		state.ScrubHistory = append([]metadata.ScrubRun(nil), state.ScrubHistory[len(state.ScrubHistory)-maxScrubHistory:]...)
+	}
 }
 
 func verifyParityGroup(rootDir string, group metadata.ParityGroup) error {

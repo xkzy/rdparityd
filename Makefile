@@ -1,4 +1,4 @@
-.PHONY: fmt test run-sim run-journal run-allocate run-write run-read run-scrub run-rebuild run-api
+.PHONY: fmt test run-sim run-journal run-allocate run-write run-read run-scrub run-scrub-history run-rebuild run-api
 
 fmt:
 	gofmt -w ./cmd ./internal
@@ -23,6 +23,9 @@ run-read:
 
 run-scrub:
 	go run ./cmd/rtpctl scrub-demo
+
+run-scrub-history:
+	go run ./cmd/rtpctl scrub-history
 
 run-rebuild:
 	go run ./cmd/rtpctl rebuild-demo

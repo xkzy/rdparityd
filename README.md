@@ -51,6 +51,7 @@ go run ./cmd/rtpctl allocate-demo
 go run ./cmd/rtpctl write-demo
 go run ./cmd/rtpctl read-demo
 go run ./cmd/rtpctl scrub-demo
+go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
 
 go run ./cmd/rtparityd -listen :8080
@@ -59,6 +60,7 @@ curl http://127.0.0.1:8080/v1/journal
 curl http://127.0.0.1:8080/v1/metadata
 curl "http://127.0.0.1:8080/v1/read?path=/shares/demo/write.bin"
 curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
+curl http://127.0.0.1:8080/v1/scrub/history
 curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
 ```
 
@@ -110,6 +112,13 @@ Or via the daemon API:
 
 ```bash
 curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
+```
+
+### Inspect persisted scrub history
+
+```bash
+go run ./cmd/rtpctl scrub-history -metadata-path /tmp/rtparityd-metadata.json
+curl http://127.0.0.1:8080/v1/scrub/history
 ```
 
 ### Rebuild a missing data-disk extent from parity

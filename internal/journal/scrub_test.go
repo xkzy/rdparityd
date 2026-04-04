@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/rtparityd/rtparityd/internal/metadata"
 )
 
 func TestCoordinatorScrubReportsHealthyPool(t *testing.T) {
@@ -88,5 +90,46 @@ func TestCoordinatorScrubRepairsCorruptedExtent(t *testing.T) {
 	}
 	if !bytes.Equal(repaired, original) {
 		t.Fatal("expected scrub to restore the original extent bytes")
+	}
+}
+
+func TestCoordinatorScrubPersistsRunHistory(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := NewCoordinator(metadataPath, journalPath)
+
+	_, err := coordinator.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/scrub-history.bin",
+		SizeBytes:   4096,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	result, err := coordinator.Scrub(false)
+	if err != nil {
+		t.Fatalf("Scrub returned error: %v", err)
+	}
+	if result.CompletedAt.IsZero() {
+		t.Fatal("expected completed timestamp to be set")
+	}
+
+	state, err := metadata.NewStore(metadataPath).Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(state.ScrubHistory) != 1 {
+		t.Fatalf("expected 1 persisted scrub run, got %d", len(state.ScrubHistory))
+	}
+	last := state.ScrubHistory[0]
+	if last.Repair != false {
+		t.Fatalf("expected persisted repair=false, got %#v", last.Repair)
+	}
+	if !last.Healthy {
+		t.Fatalf("expected persisted healthy scrub run, got %#v", last)
+	}
+	if last.FilesChecked != 1 || last.ExtentsChecked != 1 {
+		t.Fatalf("unexpected persisted scrub counters: %#v", last)
 	}
 }

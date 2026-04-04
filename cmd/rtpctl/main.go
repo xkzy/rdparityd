@@ -35,6 +35,8 @@ func main() {
 		err = runReadDemo(os.Args[2:])
 	case "scrub-demo":
 		err = runScrubDemo(os.Args[2:])
+	case "scrub-history":
+		err = runScrubHistory(os.Args[2:])
 	case "rebuild-demo":
 		err = runRebuildDemo(os.Args[2:])
 	default:
@@ -59,6 +61,7 @@ Usage:
   rtpctl write-demo [flags]
   rtpctl read-demo [flags]
   rtpctl scrub-demo [flags]
+  rtpctl scrub-history [flags]
   rtpctl rebuild-demo [flags]
 `)
 }
@@ -246,6 +249,27 @@ func runScrubDemo(args []string) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(result)
+}
+
+func runScrubHistory(args []string) error {
+	fs := flag.NewFlagSet("scrub-history", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	state, err := metadata.NewStore(*metadataPath).LoadOrCreate(metadata.PrototypeState("demo"))
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(map[string]any{
+		"metadata_path": *metadataPath,
+		"count":         len(state.ScrubHistory),
+		"history":       state.ScrubHistory,
+	})
 }
 
 func runRebuildDemo(args []string) error {

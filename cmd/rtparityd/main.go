@@ -105,6 +105,10 @@ func newMux(state runtimeState) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		var lastScrub any
+		if len(state.Prototype.ScrubHistory) > 0 {
+			lastScrub = state.Prototype.ScrubHistory[len(state.Prototype.ScrubHistory)-1]
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":                    "rtparityd",
 			"status":                  state.healthStatus(),
@@ -118,6 +122,8 @@ func newMux(state runtimeState) *http.ServeMux {
 			"journal_path":            state.JournalPath,
 			"journal_records":         state.JournalSummary.TotalRecords,
 			"journal_requires_replay": state.JournalSummary.RequiresReplay,
+			"scrub_runs":              len(state.Prototype.ScrubHistory),
+			"last_scrub":              lastScrub,
 			"timestamp":               time.Now().UTC(),
 			"started_at":              state.StartedAt,
 			"startup_error":           state.StartupError,
@@ -157,6 +163,7 @@ func newMux(state runtimeState) *http.ServeMux {
 			"extents":       state.Prototype.Extents,
 			"parity_groups": state.Prototype.ParityGroups,
 			"transactions":  state.Prototype.Transactions,
+			"scrub_history": state.Prototype.ScrubHistory,
 			"startup_error": state.StartupError,
 		})
 	})
@@ -190,6 +197,25 @@ func newMux(state runtimeState) *http.ServeMux {
 			"content_checksum":  result.ContentChecksum,
 			"healed_extent_ids": result.HealedExtentIDs,
 			"file":              result.File,
+		})
+	})
+
+	mux.HandleFunc("/v1/scrub/history", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+				"error": "method not allowed",
+			})
+			return
+		}
+
+		if loadedState, err := metadata.NewStore(state.MetadataPath).LoadOrCreate(metadata.PrototypeState(state.Prototype.Pool.Name)); err == nil {
+			state.Prototype = loadedState
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"metadata_path": state.MetadataPath,
+			"count":         len(state.Prototype.ScrubHistory),
+			"history":       state.Prototype.ScrubHistory,
 		})
 	})
 

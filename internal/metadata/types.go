@@ -92,6 +92,22 @@ type Transaction struct {
 	ReplayRequired    bool       `json:"replay_required"`
 }
 
+type ScrubRun struct {
+	RunID                string    `json:"run_id"`
+	StartedAt            time.Time `json:"started_at"`
+	CompletedAt          time.Time `json:"completed_at"`
+	Repair               bool      `json:"repair"`
+	Healthy              bool      `json:"healthy"`
+	FilesChecked         int       `json:"files_checked"`
+	ExtentsChecked       int       `json:"extents_checked"`
+	ParityGroupsChecked  int       `json:"parity_groups_checked"`
+	HealedCount          int       `json:"healed_count"`
+	FailedCount          int       `json:"failed_count"`
+	IssueCount           int       `json:"issue_count"`
+	HealedExtentIDs      []string  `json:"healed_extent_ids,omitempty"`
+	HealedParityGroupIDs []string  `json:"healed_parity_group_ids,omitempty"`
+}
+
 type SampleState struct {
 	Pool         Pool          `json:"pool"`
 	Disks        []Disk        `json:"disks"`
@@ -99,6 +115,7 @@ type SampleState struct {
 	Extents      []Extent      `json:"extents"`
 	ParityGroups []ParityGroup `json:"parity_groups"`
 	Transactions []Transaction `json:"transactions"`
+	ScrubHistory []ScrubRun    `json:"scrub_history,omitempty"`
 }
 
 func PrototypeState(name string) SampleState {
@@ -175,5 +192,6 @@ func PrototypeState(name string) SampleState {
 				ReplayRequired:    false,
 			},
 		},
+		ScrubHistory: []ScrubRun{},
 	}
 }

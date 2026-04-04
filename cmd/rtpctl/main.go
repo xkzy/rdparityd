@@ -31,6 +31,8 @@ func main() {
 		err = runAllocateDemo(os.Args[2:])
 	case "write-demo":
 		err = runWriteDemo(os.Args[2:])
+	case "read-demo":
+		err = runReadDemo(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -51,6 +53,7 @@ Usage:
   rtpctl journal-demo
   rtpctl allocate-demo [flags]
   rtpctl write-demo [flags]
+  rtpctl read-demo [flags]
 `)
 }
 
@@ -199,4 +202,23 @@ func runWriteDemo(args []string) error {
 		"result":  result,
 		"summary": summary,
 	})
+}
+
+func runReadDemo(args []string) error {
+	fs := flag.NewFlagSet("read-demo", flag.ContinueOnError)
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	filePath := fs.String("path", "/shares/demo/write.bin", "logical file path to read and verify")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	result, err := journal.NewCoordinator(*metadataPath, *journalPath).ReadFile(*filePath)
+	if err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(result)
 }

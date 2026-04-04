@@ -68,6 +68,8 @@ If an interrupted write can be safely rolled forward, startup recovery now:
 4. appends the final commit marker,
 5. returns the pool to `status: "ok"`.
 
+The prototype now also verifies extent checksums on read and can self-heal a corrupted extent by reconstructing it from the stored parity bytes when only one member in the parity group is bad.
+
 If a transaction cannot be safely completed, the daemon continues to report replay guidance and a degraded state.
 
 ## Operator rule

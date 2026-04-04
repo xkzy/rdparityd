@@ -49,11 +49,13 @@ go run ./cmd/rtpctl simulate \
 
 go run ./cmd/rtpctl allocate-demo
 go run ./cmd/rtpctl write-demo
+go run ./cmd/rtpctl read-demo
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
 curl http://127.0.0.1:8080/v1/journal
 curl http://127.0.0.1:8080/v1/metadata
+curl "http://127.0.0.1:8080/v1/read?path=/shares/demo/write.bin"
 ```
 
 ## Prototype commands
@@ -86,6 +88,12 @@ go run ./cmd/rtpctl allocate-demo
 
 ```bash
 go run ./cmd/rtpctl write-demo
+```
+
+### Verify and self-heal a stored file on read
+
+```bash
+go run ./cmd/rtpctl read-demo -metadata-path /tmp/rtparityd-metadata.json -path /shares/demo/write.bin
 ```
 
 ### Simulate a crash after `data-written`

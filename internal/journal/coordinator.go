@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/rtparityd/rtparityd/internal/metadata"
@@ -110,7 +109,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return result, nil
 	}
 
-	applyExtentChecksums(&state, extents, txID, req.LogicalPath)
+	applyExtentChecksums(&state, extents)
 	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents); err != nil {
 		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
 	}
@@ -177,12 +176,11 @@ func shouldStopAfter(target, current State) bool {
 	return target != "" && target == current
 }
 
-func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent, txID, logicalPath string) {
+func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent) {
 	checksums := make(map[string]string, len(extents))
 	for i := range extents {
-		seed := fmt.Sprintf("%s|%s|%s|%d|%d", txID, logicalPath, extents[i].ExtentID, extents[i].LogicalOffset, extents[i].Length)
-		sum := sha256.Sum256([]byte(seed))
-		checksum := hex.EncodeToString(sum[:])
+		payload := extentPayloadBytes(extents[i])
+		checksum := digestBytes(payload)
 		extents[i].Checksum = checksum
 		checksums[extents[i].ExtentID] = checksum
 	}
@@ -236,20 +234,39 @@ func writeExtentFiles(rootDir string, extents []metadata.Extent) error {
 			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
 		}
 
-		payload := strings.Repeat(extent.ExtentID+"|", int((extent.Length/16)+1))
-		data := []byte(payload)
-		if int64(len(data)) > extent.Length {
-			data = data[:extent.Length]
-		} else if int64(len(data)) < extent.Length {
-			padding := make([]byte, extent.Length-int64(len(data)))
-			data = append(data, padding...)
-		}
-
-		if err := os.WriteFile(targetPath, data, 0o600); err != nil {
+		if err := os.WriteFile(targetPath, extentPayloadBytes(extent), 0o600); err != nil {
 			return fmt.Errorf("write extent file %s: %w", targetPath, err)
 		}
 	}
 	return nil
+}
+
+func extentPayloadBytes(extent metadata.Extent) []byte {
+	seed := fmt.Sprintf("%s|%s|%d|%d|%s", extent.ExtentID, extent.FileID, extent.LogicalOffset, extent.Length, extent.ParityGroupID)
+	data := make([]byte, extent.Length)
+	block := sha256.Sum256([]byte(seed))
+	for offset := 0; offset < len(data); offset += len(block) {
+		copied := copy(data[offset:], block[:])
+		block = sha256.Sum256(block[:])
+		if copied == 0 {
+			break
+		}
+	}
+	return data
+}
+
+func digestBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func xorInto(dst, src []byte) {
+	for i := range src {
+		if i >= len(dst) {
+			break
+		}
+		dst[i] ^= src[i]
+	}
 }
 
 func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent) error {
@@ -276,18 +293,27 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 	}
 
 	for groupID, members := range groups {
-		hasher := sha256.New()
+		maxLen := 0
+		memberData := make([][]byte, 0, len(members))
 		for _, member := range members {
 			contentPath := filepath.Join(rootDir, member.PhysicalLocator.RelativePath)
 			data, err := os.ReadFile(contentPath)
 			if err != nil {
 				return fmt.Errorf("read extent file %s for parity: %w", contentPath, err)
 			}
-			_, _ = hasher.Write(data)
+			memberData = append(memberData, data)
+			if len(data) > maxLen {
+				maxLen = len(data)
+			}
 		}
-		parityChecksum := hex.EncodeToString(hasher.Sum(nil))
+
+		parityData := make([]byte, maxLen)
+		for _, data := range memberData {
+			xorInto(parityData, data)
+		}
+		parityChecksum := digestBytes(parityData)
 		parityPath := filepath.Join(parityDir, groupID+".bin")
-		if err := os.WriteFile(parityPath, []byte(parityChecksum), 0o600); err != nil {
+		if err := os.WriteFile(parityPath, parityData, 0o600); err != nil {
 			return fmt.Errorf("write parity file %s: %w", parityPath, err)
 		}
 		for i := range state.ParityGroups {

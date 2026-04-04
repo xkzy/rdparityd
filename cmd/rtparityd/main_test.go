@@ -84,3 +84,35 @@ func TestJournalEndpointReturnsReplaySummary(t *testing.T) {
 		t.Fatalf("unexpected journal path: %#v", body["journal_path"])
 	}
 }
+
+func TestReadEndpointReturnsVerificationResult(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
+
+	_, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/http-read.bin",
+		SizeBytes:   4096,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	req := httptest.NewRequest(http.MethodGet, "/v1/read?path=/shares/demo/http-read.bin", nil)
+	rr := httptest.NewRecorder()
+	newMux(state).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body["verified"] != true {
+		t.Fatalf("expected verified=true, got %#v", body["verified"])
+	}
+}

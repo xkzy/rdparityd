@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rtparityd/rtparityd/internal/journal"
@@ -157,6 +158,38 @@ func newMux(state runtimeState) *http.ServeMux {
 			"parity_groups": state.Prototype.ParityGroups,
 			"transactions":  state.Prototype.Transactions,
 			"startup_error": state.StartupError,
+		})
+	})
+
+	mux.HandleFunc("/v1/read", func(w http.ResponseWriter, r *http.Request) {
+		logicalPath := r.URL.Query().Get("path")
+		if logicalPath == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": "missing required query parameter: path",
+			})
+			return
+		}
+
+		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).ReadFile(logicalPath)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "file not found") {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]any{
+				"path":  logicalPath,
+				"error": err.Error(),
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"path":              logicalPath,
+			"verified":          result.Verified,
+			"bytes_read":        result.BytesRead,
+			"content_checksum":  result.ContentChecksum,
+			"healed_extent_ids": result.HealedExtentIDs,
+			"file":              result.File,
 		})
 	})
 

@@ -25,6 +25,8 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	diskID = strings.TrimSpace(diskID)
 	if diskID == "" {
 		return fmt.Errorf("disk id is required")
@@ -41,7 +43,7 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 		return fmt.Errorf("invalid disk role %q", role)
 	}
 
-	state, err := c.metadata.LoadOrCreate(metadata.PrototypeState("demo"))
+	state, err := c.loadState(metadata.PrototypeState("demo"))
 	if err != nil {
 		return fmt.Errorf("load metadata state: %w", err)
 	}
@@ -62,7 +64,7 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 		Generation:    int64(len(state.Transactions) + 1),
 	})
 
-	if _, err := c.metadata.Save(state); err != nil {
+	if _, err := c.commitState(state); err != nil {
 		return fmt.Errorf("persist metadata after add disk: %w", err)
 	}
 	return nil
@@ -78,6 +80,8 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	oldDiskID = strings.TrimSpace(oldDiskID)
 	newDiskID = strings.TrimSpace(newDiskID)
 	if oldDiskID == "" || newDiskID == "" {
@@ -87,7 +91,7 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 		return fmt.Errorf("old and new disk id must differ")
 	}
 
-	state, err := c.metadata.LoadOrCreate(metadata.PrototypeState("demo"))
+	state, err := c.loadState(metadata.PrototypeState("demo"))
 	if err != nil {
 		return fmt.Errorf("load metadata state: %w", err)
 	}
@@ -133,7 +137,7 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 		return fmt.Errorf("invariant violation after replace disk: %v", violations[0])
 	}
 
-	if _, err := c.metadata.Save(state); err != nil {
+	if _, err := c.commitState(state); err != nil {
 		return fmt.Errorf("persist metadata after replace disk: %w", err)
 	}
 	return nil
@@ -149,12 +153,14 @@ func (c *Coordinator) FailDisk(diskID string) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	diskID = strings.TrimSpace(diskID)
 	if diskID == "" {
 		return fmt.Errorf("disk id is required")
 	}
 
-	state, err := c.metadata.LoadOrCreate(metadata.PrototypeState("demo"))
+	state, err := c.loadState(metadata.PrototypeState("demo"))
 	if err != nil {
 		return fmt.Errorf("load metadata state: %w", err)
 	}
@@ -171,7 +177,7 @@ func (c *Coordinator) FailDisk(diskID string) error {
 		return fmt.Errorf("disk %q not found", diskID)
 	}
 
-	if _, err := c.metadata.Save(state); err != nil {
+	if _, err := c.commitState(state); err != nil {
 		return fmt.Errorf("persist metadata after fail disk: %w", err)
 	}
 	return nil

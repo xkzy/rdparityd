@@ -19,10 +19,10 @@ func TestGate10_ScrubRepairPathRepairsCorruptedExtent(t *testing.T) {
 
 	payload := bytes.Repeat([]byte("scrub-repair-path-"), 65536)
 	_, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/scrub/repair.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/scrub/repair.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)

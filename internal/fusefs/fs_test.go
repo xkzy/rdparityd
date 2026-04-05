@@ -540,31 +540,30 @@ func TestFUSEWriteCallsCoordinatorJournal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("journal.Load: %v", err)
 	}
-	if len(records) == 0 {
-		t.Fatal("expected journal records after FUSE write")
+	// Post-compaction: journal is empty after all transactions commit.
+	// Verify via metadata instead.
+	state, err := journal.NewCoordinator(metadataPath, journalPath).ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta: %v", err)
 	}
-	hasCommitted := false
-	for _, r := range records {
-		if r.State == journal.StateCommitted {
-			hasCommitted = true
+	hasFile := false
+	for _, f := range state.Files {
+		if f.Path == "/shares/demo/journal-check.bin" {
+			hasFile = true
 		}
 	}
-	if !hasCommitted {
-		t.Errorf("expected at least one committed journal record, got states: %v", func() []string {
-			s := make([]string, len(records))
-			for i, r := range records {
-				s[i] = string(r.State)
-			}
-			return s
-		}())
+	if !hasFile {
+		t.Fatal("expected committed file in metadata after FUSE write")
 	}
+	// Journal should be clean (compacted).
 	summary, err := journal.NewStore(journalPath).Replay()
 	if err != nil {
 		t.Fatalf("journal.Replay: %v", err)
 	}
 	if summary.RequiresReplay {
-		t.Errorf("journal requires replay after clean FUSE write: %+v", summary)
+		t.Fatalf("journal requires replay after committed FUSE write: %+v", summary)
 	}
+	_ = records // kept to not break build; may be empty post-compaction
 }
 
 // ─── benchmarks ───────────────────────────────────────────────────────────────

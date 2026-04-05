@@ -126,6 +126,11 @@ func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter 
 		return ReadResult{}, err
 	}
 
+	// Use concurrent read for multiple extents on different disks
+	if len(extents) > 1 {
+		return c.readFileParallel(logicalPath, state, file, extents)
+	}
+
 	content := make([]byte, 0, file.SizeBytes)
 	healed := make([]string, 0)
 	for _, extent := range extents {
@@ -145,6 +150,72 @@ func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter 
 	if int64(len(content)) != file.SizeBytes {
 		return ReadResult{}, fmt.Errorf(
 			"I13: read length mismatch for %s: committed size=%d got=%d",
+			logicalPath, file.SizeBytes, len(content))
+	}
+
+	return ReadResult{
+		File:            file,
+		BytesRead:       int64(len(content)),
+		Verified:        true,
+		HealedExtentIDs: healed,
+		ContentChecksum: digestBytes(content),
+		Data:            content,
+	}, nil
+}
+
+func (c *Coordinator) readFileParallel(logicalPath string, state metadata.SampleState, file metadata.FileRecord, extents []metadata.Extent) (ReadResult, error) {
+	rootDir := filepath.Dir(c.metadataPath)
+	scheduler := NewDiskScheduler(4, 2)
+	defer scheduler.Close()
+
+	coord := NewReadCoordinator(scheduler, rootDir, state)
+
+	results, err := coord.ReadExtents(extents)
+	if err != nil {
+		return ReadResult{}, fmt.Errorf("parallel read extents: %w", err)
+	}
+
+	// Reassemble in logical offset order
+	type indexedResult struct {
+		offset   int64
+		extentID string
+		data     []byte
+		healed   bool
+		err      error
+	}
+
+	indexed := make([]indexedResult, len(extents))
+	for i, ext := range extents {
+		indexed[i] = indexedResult{
+			offset:   ext.LogicalOffset,
+			extentID: ext.ExtentID,
+			data:     results[i].Data,
+			healed:   results[i].Healed,
+			err:      results[i].Error,
+		}
+		if results[i].Error != nil {
+			return ReadResult{}, fmt.Errorf("read extent %s: %w", ext.ExtentID, results[i].Error)
+		}
+	}
+
+	// Sort by offset
+	sort.Slice(indexed, func(i, j int) bool {
+		return indexed[i].offset < indexed[j].offset
+	})
+
+	// Assemble content
+	content := make([]byte, 0, file.SizeBytes)
+	healed := make([]string, 0)
+
+	for _, r := range indexed {
+		content = append(content, r.data...)
+		if r.healed {
+			healed = append(healed, r.extentID)
+		}
+	}
+
+	if int64(len(content)) != file.SizeBytes {
+		return ReadResult{}, fmt.Errorf("I13: read length mismatch for %s: committed size=%d got=%d",
 			logicalPath, file.SizeBytes, len(content))
 	}
 

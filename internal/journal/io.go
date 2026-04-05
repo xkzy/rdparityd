@@ -1,0 +1,514 @@
+package journal
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/xkzy/rdparityd/internal/metadata"
+)
+
+type semaphore chan struct{}
+
+func newSemaphore(n int) semaphore {
+	if n <= 0 {
+		n = 1
+	}
+	ch := make(semaphore, n)
+	for i := 0; i < n; i++ {
+		ch <- struct{}{}
+	}
+	return ch
+}
+
+func (s semaphore) Acquire() { <-s }
+func (s semaphore) Release() { s <- struct{}{} }
+
+type DiskWorkerPool struct {
+	diskID       string
+	workCh       chan func()
+	resultCh     chan error
+	wg           sync.WaitGroup
+	maxWorkers   int
+	activeWorker int32
+}
+
+func NewDiskWorkerPool(diskID string, maxWorkers int) *DiskWorkerPool {
+	pool := &DiskWorkerPool{
+		diskID:     diskID,
+		workCh:     make(chan func(), 1024),
+		resultCh:   make(chan error, 1024),
+		maxWorkers: maxWorkers,
+	}
+	for i := 0; i < maxWorkers; i++ {
+		pool.wg.Add(1)
+		go pool.worker()
+	}
+	return pool
+}
+
+func (p *DiskWorkerPool) worker() {
+	defer p.wg.Done()
+	for task := range p.workCh {
+		atomic.AddInt32(&p.activeWorker, 1)
+		task()
+		atomic.AddInt32(&p.activeWorker, -1)
+	}
+}
+
+func (p *DiskWorkerPool) Submit(task func() error) {
+	p.workCh <- func() {
+		task()
+	}
+}
+
+func (p *DiskWorkerPool) Wait() error {
+	close(p.workCh)
+	p.wg.Wait()
+	close(p.resultCh)
+	var firstErr error
+	for err := range p.resultCh {
+		if firstErr == nil && err != nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (p *DiskWorkerPool) Close() {
+	close(p.workCh)
+	p.wg.Wait()
+	close(p.resultCh)
+}
+
+func (p *DiskWorkerPool) ActiveWorkers() int {
+	return int(atomic.LoadInt32(&p.activeWorker))
+}
+
+type DiskScheduler struct {
+	mu              sync.Mutex
+	pools           map[string]*DiskWorkerPool
+	readLimit       int
+	writeLimit      int
+	readSemaphores  map[string]semaphore
+	writeSemaphores map[string]semaphore
+}
+
+func NewDiskScheduler(readLimit, writeLimit int) *DiskScheduler {
+	if readLimit <= 0 {
+		readLimit = 4
+	}
+	if writeLimit <= 0 {
+		writeLimit = 2
+	}
+	return &DiskScheduler{
+		pools:           make(map[string]*DiskWorkerPool),
+		readLimit:       readLimit,
+		writeLimit:      writeLimit,
+		readSemaphores:  make(map[string]semaphore),
+		writeSemaphores: make(map[string]semaphore),
+	}
+}
+
+func (s *DiskScheduler) EnsureDisk(diskID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pools[diskID] == nil {
+		s.pools[diskID] = NewDiskWorkerPool(diskID, s.readLimit)
+		s.readSemaphores[diskID] = newSemaphore(s.readLimit)
+		s.writeSemaphores[diskID] = newSemaphore(s.writeLimit)
+	}
+}
+
+func (s *DiskScheduler) GetPool(diskID string) *DiskWorkerPool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pools[diskID]
+}
+
+func (s *DiskScheduler) GetReadSemaphore(diskID string) semaphore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readSemaphores[diskID] == nil {
+		s.readSemaphores[diskID] = newSemaphore(s.readLimit)
+	}
+	return s.readSemaphores[diskID]
+}
+
+func (s *DiskScheduler) GetWriteSemaphore(diskID string) semaphore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writeSemaphores[diskID] == nil {
+		s.writeSemaphores[diskID] = newSemaphore(s.writeLimit)
+	}
+	return s.writeSemaphores[diskID]
+}
+
+func (s *DiskScheduler) disks() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	disks := make([]string, 0, len(s.pools))
+	for id := range s.pools {
+		disks = append(disks, id)
+	}
+	return disks
+}
+
+func (s *DiskScheduler) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pool := range s.pools {
+		pool.Close()
+	}
+}
+
+type ExtentReadRequest struct {
+	Extent   metadata.Extent
+	Result   chan *ExtentReadResult
+	Priority int
+}
+
+type ExtentReadResult struct {
+	Data     []byte
+	Verified bool
+	Healed   bool
+	Error    error
+}
+
+type ReadCoordinator struct {
+	scheduler *DiskScheduler
+	rootDir   string
+	state     *metadata.SampleState
+}
+
+func NewReadCoordinator(scheduler *DiskScheduler, rootDir string, state metadata.SampleState) *ReadCoordinator {
+	return &ReadCoordinator{
+		scheduler: scheduler,
+		rootDir:   rootDir,
+		state:     &state,
+	}
+}
+
+func (r *ReadCoordinator) ReadExtents(extents []metadata.Extent) ([]*ExtentReadResult, error) {
+	if len(extents) == 0 {
+		return nil, nil
+	}
+
+	type resultWithIdx struct {
+		idx int
+		res *ExtentReadResult
+	}
+
+	results := make([]*ExtentReadResult, len(extents))
+	resultCh := make(chan resultWithIdx, len(extents))
+
+	for i, ext := range extents {
+		diskID := ext.DataDiskID
+		r.scheduler.EnsureDisk(diskID)
+		idx := i
+
+		go func(extent metadata.Extent, idx int) {
+			sem := r.scheduler.GetReadSemaphore(diskID)
+			sem.Acquire()
+			defer sem.Release()
+
+			pool := r.scheduler.GetPool(diskID)
+			if pool == nil {
+				resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{Error: fmt.Errorf("no pool for disk %s", diskID)}}
+				return
+			}
+
+			pool.Submit(func() error {
+				data, verified, healed, err := r.readAndVerifyExtent(extent)
+				resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{
+					Data:     data,
+					Verified: verified,
+					Healed:   healed,
+					Error:    err,
+				}}
+				return err
+			})
+		}(ext, idx)
+	}
+
+	var firstErr error
+	for i := 0; i < len(extents); i++ {
+		result := <-resultCh
+		if result.res.Error != nil && firstErr == nil {
+			firstErr = result.res.Error
+		}
+		results[result.idx] = result.res
+	}
+
+	close(resultCh)
+
+	return results, firstErr
+}
+
+func (r *ReadCoordinator) readAndVerifyExtent(extent metadata.Extent) ([]byte, bool, bool, error) {
+	path := filepath.Join(r.rootDir, extent.PhysicalLocator.RelativePath)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if r.state == nil {
+			return nil, false, false, fmt.Errorf("read extent %s: %w", extent.ExtentID, err)
+		}
+		data, err = reconstructExtent(r.rootDir, *r.state, extent)
+		if err != nil {
+			return nil, false, false, fmt.Errorf("reconstruct extent %s: %w", extent.ExtentID, err)
+		}
+		return data, true, true, nil
+	}
+
+	checksum := digestBytes(data)
+	if checksum == extent.Checksum {
+		if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
+			decompressed, err := decompress(data, CompressionAlg(extent.CompressionAlg))
+			if err != nil {
+				return nil, false, false, fmt.Errorf("decompress extent %s: %w", extent.ExtentID, err)
+			}
+			if int64(len(decompressed)) != extent.Length {
+				return nil, false, false, fmt.Errorf("decompressed length mismatch for %s", extent.ExtentID)
+			}
+			return decompressed, true, false, nil
+		}
+		if int64(len(data)) == extent.Length {
+			return append([]byte(nil), data...), true, false, nil
+		}
+	}
+
+	if r.state == nil {
+		return nil, false, false, fmt.Errorf("extent checksum mismatch for %s", extent.ExtentID)
+	}
+
+	data, err = reconstructExtent(r.rootDir, *r.state, extent)
+	if err != nil {
+		return nil, false, false, fmt.Errorf("reconstruct extent %s: %w", extent.ExtentID, err)
+	}
+
+	newChecksum := digestBytes(data)
+	if newChecksum != extent.Checksum {
+		return nil, false, false, fmt.Errorf("reconstructed checksum mismatch for %s", extent.ExtentID)
+	}
+	return data, true, true, nil
+}
+
+type WriteCoordinator struct {
+	scheduler   *DiskScheduler
+	rootDir     string
+	parityLocks *ParityGroupLocker
+}
+
+func NewWriteCoordinator(scheduler *DiskScheduler, rootDir string) *WriteCoordinator {
+	return &WriteCoordinator{
+		scheduler:   scheduler,
+		rootDir:     rootDir,
+		parityLocks: NewParityGroupLocker(),
+	}
+}
+
+func (w *WriteCoordinator) WriteExtents(extents []metadata.Extent, payload []byte) error {
+	if len(extents) == 0 {
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	errors := make([]error, len(extents))
+
+	for i, ext := range extents {
+		wg.Add(1)
+		go func(idx int, extent metadata.Extent) {
+			defer wg.Done()
+			diskID := extent.DataDiskID
+			w.scheduler.EnsureDisk(diskID)
+
+			sem := w.scheduler.GetWriteSemaphore(diskID)
+			sem.Acquire()
+			defer sem.Release()
+
+			errors[idx] = w.writeExtentToDisk(extent, payload)
+		}(i, ext)
+	}
+
+	wg.Wait()
+
+	for _, err := range errors {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *WriteCoordinator) writeExtentToDisk(extent metadata.Extent, payload []byte) error {
+	path := filepath.Join(w.rootDir, extent.PhysicalLocator.RelativePath)
+
+	extentData := extentData(extent, payload)
+
+	if err := replaceSyncFile(path, extentData, 0o600); err != nil {
+		return fmt.Errorf("write extent %s: %w", extent.ExtentID, err)
+	}
+
+	return nil
+}
+
+type ParityGroupLocker struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+func NewParityGroupLocker() *ParityGroupLocker {
+	return &ParityGroupLocker{
+		locks: make(map[string]*sync.Mutex),
+	}
+}
+
+func (p *ParityGroupLocker) LockGroup(groupID string) func() {
+	p.mu.Lock()
+	if p.locks[groupID] == nil {
+		p.locks[groupID] = &sync.Mutex{}
+	}
+	m := p.locks[groupID]
+	p.mu.Unlock()
+
+	m.Lock()
+	return func() { m.Unlock() }
+}
+
+type IOScheduler struct {
+	userReadCh  chan *ExtentReadRequest
+	userWriteCh chan interface{}
+	scrubCh     chan interface{}
+	rebuildCh   chan interface{}
+
+	diskPools map[string]*DiskWorkerPool
+	wg        sync.WaitGroup
+
+	maxConcurrent int
+	stopCh        chan struct{}
+}
+
+func NewIOScheduler(maxConcurrent int) *IOScheduler {
+	if maxConcurrent <= 0 {
+		maxConcurrent = 8
+	}
+	return &IOScheduler{
+		userReadCh:    make(chan *ExtentReadRequest, 256),
+		userWriteCh:   make(chan interface{}, 256),
+		scrubCh:       make(chan interface{}, 64),
+		rebuildCh:     make(chan interface{}, 64),
+		diskPools:     make(map[string]*DiskWorkerPool),
+		maxConcurrent: maxConcurrent,
+		stopCh:        make(chan struct{}),
+	}
+}
+
+func (s *IOScheduler) Start() {
+	for i := 0; i < s.maxConcurrent; i++ {
+		s.wg.Add(1)
+		go s.worker(i)
+	}
+}
+
+func (s *IOScheduler) worker(id int) {
+	defer s.wg.Done()
+
+	for {
+		select {
+		case <-s.stopCh:
+			return
+		case req := <-s.userReadCh:
+			s.handleReadRequest(req)
+		case task := <-s.userWriteCh:
+			s.handleWriteRequest(task)
+		case task := <-s.scrubCh:
+			s.handleScrubRequest(task)
+		case task := <-s.rebuildCh:
+			s.handleRebuildRequest(task)
+		}
+	}
+}
+
+func (s *IOScheduler) handleReadRequest(req *ExtentReadRequest) {
+}
+
+func (s *IOScheduler) handleWriteRequest(task interface{}) {
+}
+
+func (s *IOScheduler) handleScrubRequest(task interface{}) {
+}
+
+func (s *IOScheduler) handleRebuildRequest(task interface{}) {
+}
+
+func (s *IOScheduler) Stop() {
+	close(s.stopCh)
+	s.wg.Wait()
+}
+
+type ReadAheadCache struct {
+	mu         sync.Mutex
+	maxBytes   int64
+	currentOff int64
+	requests   map[int64]*readAheadRequest
+	windowSize int64
+	prefetchCh chan *ExtentReadRequest
+}
+
+type readAheadRequest struct {
+	Extent metadata.Extent
+	Result chan *ExtentReadResult
+	Done   bool
+}
+
+func NewReadAheadCache(maxBytes, windowSize int64) *ReadAheadCache {
+	if windowSize <= 0 {
+		windowSize = 4 * 1024 * 1024
+	}
+	return &ReadAheadCache{
+		maxBytes:   maxBytes,
+		windowSize: windowSize,
+		requests:   make(map[int64]*readAheadRequest),
+		prefetchCh: make(chan *ExtentReadRequest, 64),
+	}
+}
+
+func (c *ReadAheadCache) Prefetch(extents []metadata.Extent) {
+}
+
+func (c *ReadAheadCache) Get(offset int64) ([]byte, bool) {
+	return nil, false
+}
+
+type ScrubConfig struct {
+	ExtentWorkersPerDisk int
+	VerifyBatchSize      int
+	ThrottleDuration     time.Duration
+	MaxBandwidthMBps     int
+}
+
+func DefaultScrubConfig() ScrubConfig {
+	return ScrubConfig{
+		ExtentWorkersPerDisk: 2,
+		VerifyBatchSize:      32,
+		ThrottleDuration:     100 * time.Millisecond,
+		MaxBandwidthMBps:     0,
+	}
+}
+
+type RebuildConfig struct {
+	MaxConcurrent    int
+	VerifyBatchSize  int
+	ThrottleDuration time.Duration
+}
+
+func DefaultRebuildConfig() RebuildConfig {
+	return RebuildConfig{
+		MaxConcurrent:    4,
+		VerifyBatchSize:  10,
+		ThrottleDuration: 50 * time.Millisecond,
+	}
+}

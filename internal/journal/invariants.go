@@ -127,6 +127,8 @@ func CheckJournalInvariants(records []Record) []InvariantViolation {
 // ─── Group E: Extent integrity ────────────────────────────────────────────────
 
 // E1: every extent with a non-empty checksum has on-disk bytes matching it.
+// For compressed extents, the on-disk size is CompressedSize and checksum
+// is computed on the compressed data.
 func checkE1ExtentChecksums(rootDir string, state metadata.SampleState) []InvariantViolation {
 	var vs []InvariantViolation
 	for _, extent := range state.Extents {
@@ -144,14 +146,28 @@ func checkE1ExtentChecksums(rootDir string, state metadata.SampleState) []Invari
 			})
 			continue
 		}
-		if int64(len(data)) != extent.Length {
-			vs = append(vs, InvariantViolation{
-				Code:   "E1",
-				Kind:   "extent",
-				Entity: extent.ExtentID,
-				Message: fmt.Sprintf("length mismatch: metadata=%d disk=%d", extent.Length, len(data)),
-			})
-			continue
+		// For compressed extents, check compressed size and checksum
+		if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
+			if extent.CompressedSize > 0 && int64(len(data)) != extent.CompressedSize {
+				vs = append(vs, InvariantViolation{
+					Code:    "E1",
+					Kind:    "extent",
+					Entity:  extent.ExtentID,
+					Message: fmt.Sprintf("compressed length mismatch: metadata_compressed=%d disk=%d", extent.CompressedSize, len(data)),
+				})
+				continue
+			}
+		} else {
+			// For uncompressed extents, check original length
+			if int64(len(data)) != extent.Length {
+				vs = append(vs, InvariantViolation{
+					Code:    "E1",
+					Kind:    "extent",
+					Entity:  extent.ExtentID,
+					Message: fmt.Sprintf("length mismatch: metadata=%d disk=%d", extent.Length, len(data)),
+				})
+				continue
+			}
 		}
 		if got := digestBytes(data); got != extent.Checksum {
 			vs = append(vs, InvariantViolation{
@@ -355,7 +371,7 @@ func checkP3ParityXOR(rootDir string, state metadata.SampleState) []InvariantVio
 			continue
 		}
 
-		// Read all member extent files.
+		// Read all member extent files. For compressed extents, decompress first.
 		memberData := make([][]byte, 0, len(group.MemberExtentIDs))
 		maxLen := 0
 		groupOK := true
@@ -376,6 +392,21 @@ func checkP3ParityXOR(rootDir string, state metadata.SampleState) []InvariantVio
 				})
 				groupOK = false
 				break
+			}
+			// Decompress if needed for XOR verification
+			if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
+				decompressed, err := decompress(data, CompressionAlg(extent.CompressionAlg))
+				if err != nil {
+					vs = append(vs, InvariantViolation{
+						Code:    "P3",
+						Kind:    "parity",
+						Entity:  group.ParityGroupID,
+						Message: fmt.Sprintf("cannot decompress extent %s: %v", extent.ExtentID, err),
+					})
+					groupOK = false
+					break
+				}
+				data = decompressed
 			}
 			memberData = append(memberData, data)
 			if len(data) > maxLen {

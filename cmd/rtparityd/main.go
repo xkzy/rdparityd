@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +107,97 @@ func (s *runtimeState) healthStatus() string {
 		return "degraded"
 	}
 	return "ok"
+}
+
+func diagnosticsView(state *runtimeState) map[string]any {
+	state.mu.RLock()
+	proto := state.Prototype
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	recovery := state.Recovery
+	summary := state.JournalSummary
+	startupError := state.StartupError
+	status := state.healthStatus()
+	state.mu.RUnlock()
+
+	rootDir := filepath.Dir(metadataPath)
+	formatResult := journal.ValidateOnDiskFormats(rootDir, metadataPath, journalPath)
+	analysis := journal.AnalyzeMultiDiskFailures(rootDir, proto)
+	violations := journal.CheckIntegrityInvariants(rootDir, proto)
+
+	failedDiskSet := make(map[string]struct{})
+	for _, disk := range proto.Disks {
+		if disk.HealthStatus != "" && disk.HealthStatus != "online" {
+			failedDiskSet[disk.DiskID] = struct{}{}
+		}
+	}
+	for _, diskID := range analysis.FailedDisks {
+		failedDiskSet[diskID] = struct{}{}
+	}
+	failedDisks := make([]string, 0, len(failedDiskSet))
+	for diskID := range failedDiskSet {
+		failedDisks = append(failedDisks, diskID)
+	}
+
+	rebuildProgressFiles, _ := filepath.Glob(filepath.Join(rootDir, "rebuild-*.progress"))
+
+	metadataState := "ok"
+	if _, err := metadata.NewStore(metadataPath).Load(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			metadataState = "missing"
+		} else {
+			metadataState = "corrupt"
+		}
+	} else if len(recovery.RecoveredTxIDs) > 0 || len(recovery.AbortedTxIDs) > 0 {
+		metadataState = "reconciled-from-journal"
+	}
+
+	journalState := "clean"
+	if startupError != "" && strings.Contains(startupError, "journal:") {
+		journalState = "corrupt"
+	} else if summary.RequiresReplay {
+		journalState = "dirty"
+	}
+
+	parityIssues := make([]string, 0)
+	corruptionFindings := make([]string, 0)
+	for _, v := range violations {
+		switch v.Code {
+		case "P2", "P3":
+			parityIssues = append(parityIssues, v.Error())
+			corruptionFindings = append(corruptionFindings, v.Error())
+		case "E1", "J1":
+			corruptionFindings = append(corruptionFindings, v.Error())
+		}
+	}
+	corruptionFindings = append(corruptionFindings, formatResult.Errors...)
+
+	var lastScrub any
+	if n := len(proto.ScrubHistory); n > 0 {
+		lastScrub = proto.ScrubHistory[n-1]
+	}
+
+	return map[string]any{
+		"status":                    status,
+		"pool_state":                status,
+		"metadata_state":            metadataState,
+		"journal_state":             journalState,
+		"journal_requires_replay":   summary.RequiresReplay,
+		"interrupted_transactions":  summary.IncompleteTxIDs,
+		"recovered_transactions":    recovery.RecoveredTxIDs,
+		"aborted_transactions":      recovery.AbortedTxIDs,
+		"failed_disks":              failedDisks,
+		"rebuild_in_progress_files": rebuildProgressFiles,
+		"last_scrub":                lastScrub,
+		"parity_mismatch_state":     len(parityIssues) > 0,
+		"parity_issues":             parityIssues,
+		"corruption_findings":       corruptionFindings,
+		"format_warnings":           formatResult.Warnings,
+		"multi_disk_failure":        analysis,
+		"startup_error":             startupError,
+		"metadata_path":             metadataPath,
+		"journal_path":              journalPath,
+	}
 }
 
 func newMux(state *runtimeState) *http.ServeMux {
@@ -211,6 +305,17 @@ func newMux(state *runtimeState) *http.ServeMux {
 			"scrub_history": scrubHistory,
 			"startup_error": startupError,
 		})
+	})
+
+	mux.HandleFunc("/v1/diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", "GET")
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+				"error": "method not allowed",
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, diagnosticsView(state))
 	})
 
 	mux.HandleFunc("/v1/read", func(w http.ResponseWriter, r *http.Request) {

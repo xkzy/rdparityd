@@ -230,9 +230,14 @@ func (d *dirNode) Mkdir(
 	return child, fs.OK
 }
 
-// Unlink is a stub that prevents accidental deletion. A production
-// implementation would tombstone the file in the metadata and reclaim extents.
-// TODO: implement Unlink as a metadata tombstone + extent GC operation.
+// Unlink removes a file from the pool. This requires:
+// 1. Remove file from metadata
+// 2. Remove all extents from metadata
+// 3. Update parity groups (remove extent references)
+// 4. Update disk free space
+// 5. Delete extent files from disk
+// 6. Update and fsync parity files
+// Currently returns ENOTSUP - requires DeleteFile in journal.Coordinator.
 func (d *dirNode) Unlink(_ context.Context, _ string) syscall.Errno {
 	return syscall.ENOTSUP
 }

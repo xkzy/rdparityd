@@ -587,6 +587,20 @@ func verifyOnDiskExtentBytes(path string, extent metadata.Extent) error {
 	return nil
 }
 
+func verifyOnDiskParityBytes(path string, expectedChecksum string, expectedLen int) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) != expectedLen {
+		return fmt.Errorf("length mismatch: expected=%d disk=%d", expectedLen, len(data))
+	}
+	if digestBytes(data) != expectedChecksum {
+		return fmt.Errorf("checksum mismatch: expected=%s got=%s", expectedChecksum, digestBytes(data))
+	}
+	return nil
+}
+
 func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent, limit int) error {
 	if len(extents) == 0 {
 		return nil
@@ -664,6 +678,14 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 		parityPath := filepath.Join(parityDir, groupID+".bin")
 		if err := replaceSyncFile(parityPath, parityData, 0o600); err != nil {
 			return fmt.Errorf("write parity file %s: %w", parityPath, err)
+		}
+		// I4: post-write readback — verify the parity bytes now on disk match
+		// the computed checksum before allowing the transaction to proceed.
+		// If the storage layer accepted the write but stored different bytes,
+		// we must detect it here or the parity group becomes permanently
+		// unrecoverable (all members would reconstruct to corrupted data).
+		if err := verifyOnDiskParityBytes(parityPath, parityChecksum, maxLen); err != nil {
+			return fmt.Errorf("I4: post-write parity readback failed for group %s: %w", groupID, err)
 		}
 		for i := range state.ParityGroups {
 			if state.ParityGroups[i].ParityGroupID == groupID {

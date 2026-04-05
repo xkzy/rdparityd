@@ -14,7 +14,6 @@ package journal
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
@@ -107,7 +106,6 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 	}
 
 	// Inherit metadata from old disk, update to new identity.
-	now := time.Now().UTC()
 	old := state.Disks[oldIdx]
 	newDisk := metadata.Disk{
 		DiskID:         newDiskID,
@@ -120,7 +118,6 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 		HealthStatus:   "online",
 		Generation:     old.Generation + 1,
 	}
-	_ = now // available for future use (e.g. a ReplacedAt timestamp)
 
 	// Replace disk in the disks list.
 	state.Disks[oldIdx] = newDisk

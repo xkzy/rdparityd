@@ -359,27 +359,66 @@ func TestCategoryF_ScrubRepairsAllDetectedCorruptions(t *testing.T) {
 // - Final result matches full fresh scrub
 // - No data corruption from interruption
 func TestCategoryF_ScrubInterruptionAndResumption(t *testing.T) {
-	t.Skip("Category F not yet implemented: scrub checkpoint/resumption not yet designed")
-
-	// PSEUDOCODE:
-	// 1. Write 20 files to create large extent set
-	// 2. Corrupt 2 extents
-	// 3. Start scrub in goroutine with hook to stop mid-way
-	// 4. Hook triggers after checking 50% of extents
-	// 5. Stop scrub mid-execution
-	// 6. Create new coordinator (simulating restart)
-	// 7. Resume scrub
-	// 8. Assert: all extents eventually checked
-	// 9. Assert: both corrupt extents detected
-	// 10. Assert: no double-checks of already-scanned extents
-
 	root := t.TempDir()
-	_ = NewCoordinator(
-		filepath.Join(root, "metadata.json"),
-		filepath.Join(root, "journal.log"),
-	)
+	metaPath := filepath.Join(root, "metadata.json")
+	journalPath := filepath.Join(root, "journal.log")
+	coord := NewCoordinator(metaPath, journalPath)
 
-	// Implementation to follow
+	result, err := coord.WriteFile(WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    "/scrub/resume.bin",
+		AllowSynthetic: true,
+		SizeBytes:      (2 << 20) + 8192,
+	})
+	if err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+	if len(result.Extents) < 2 {
+		t.Fatalf("expected multiple extents, got %d", len(result.Extents))
+	}
+
+	corrupt := result.Extents[0]
+	extentPath := filepath.Join(root, corrupt.PhysicalLocator.RelativePath)
+	data, err := os.ReadFile(extentPath)
+	if err != nil {
+		t.Fatalf("read extent failed: %v", err)
+	}
+	data[0] ^= 0xFF
+	if err := os.WriteFile(extentPath, data, 0o600); err != nil {
+		t.Fatalf("corrupt extent write failed: %v", err)
+	}
+
+	firstRun, err := coord.scrubWithRepairFailAfter(true, StatePrepared)
+	if err != nil {
+		t.Fatalf("interrupted scrub failed unexpectedly: %v", err)
+	}
+	if firstRun.FailedCount == 0 {
+		t.Fatal("expected interrupted scrub to record a failed repair")
+	}
+	progress, err := loadScrubProgress(metaPath)
+	if err != nil {
+		t.Fatalf("loadScrubProgress failed: %v", err)
+	}
+	if len(progress.CompletedExtents) == 0 {
+		t.Fatal("expected persisted scrub checkpoint after interruption")
+	}
+
+	resumed, err := NewCoordinator(metaPath, journalPath).Scrub(true)
+	if err != nil {
+		t.Fatalf("resumed scrub failed: %v", err)
+	}
+	if !resumed.Resumed {
+		t.Fatal("expected resumed scrub to set Resumed=true")
+	}
+	if resumed.ExtentsSkipped == 0 && resumed.ParityGroupsSkipped == 0 {
+		t.Fatal("expected resumed scrub to skip work already checkpointed")
+	}
+	if !resumed.Healthy {
+		t.Fatalf("expected resumed scrub to finish healthy, got %+v", resumed)
+	}
+	if _, err := os.Stat(scrubProgressPath(metaPath)); !os.IsNotExist(err) {
+		t.Fatalf("expected scrub progress file removal after successful resume, err=%v", err)
+	}
 }
 
 // TestCategoryF_ScrubWithAuditOnlyMode verifies that audit-only scrub (repair=false)
@@ -1063,26 +1102,71 @@ func TestCategoryF_ScrubAcrossMultiplePoolsIsolated(t *testing.T) {
 // - Final ExtentsChecked == total extents
 // - Can cancel scrub via progress context
 func TestCategoryF_ScrubProgressReporting(t *testing.T) {
-	t.Skip("Category F not yet implemented: scrub progress tracking design")
-
-	// PSEUDOCODE:
-	// 1. Write many files to create long-running scrub
-	// 2. Start scrub in background
-	// 3. Listen to progress channel
-	// 4. Collect progress events for 500ms
-	// 5. Assert: received multiple progress updates
-	// 6. Assert: progress monotonically increasing
-	// 7. Assert: extents/files checked increasing
-	// 8. Wait for final result
-	// 9. Assert: final progress == total extents
-
 	root := t.TempDir()
-	_ = NewCoordinator(
-		filepath.Join(root, "metadata.json"),
-		filepath.Join(root, "journal.log"),
-	)
+	metaPath := filepath.Join(root, "metadata.json")
+	journalPath := filepath.Join(root, "journal.log")
+	coord := NewCoordinator(metaPath, journalPath)
 
-	// Implementation to follow
+	_, err := coord.WriteFile(WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    "/scrub/progress.bin",
+		AllowSynthetic: true,
+		SizeBytes:      (2 << 20) + 4096,
+	})
+	if err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+
+	state, err := coord.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta failed: %v", err)
+	}
+	if len(state.Extents) == 0 {
+		t.Fatal("expected extents")
+	}
+	corrupt := state.Extents[0]
+	extentPath := filepath.Join(root, corrupt.PhysicalLocator.RelativePath)
+	data, err := os.ReadFile(extentPath)
+	if err != nil {
+		t.Fatalf("read extent failed: %v", err)
+	}
+	data[0] ^= 0xFF
+	if err := os.WriteFile(extentPath, data, 0o600); err != nil {
+		t.Fatalf("corrupt extent write failed: %v", err)
+	}
+
+	firstRun, err := coord.scrubWithRepairFailAfter(true, StatePrepared)
+	if err != nil {
+		t.Fatalf("scrubWithRepairFailAfter failed unexpectedly: %v", err)
+	}
+	if firstRun.FailedCount == 0 {
+		t.Fatal("expected interrupted scrub to produce a failed repair result")
+	}
+
+	progress, err := loadScrubProgress(metaPath)
+	if err != nil {
+		t.Fatalf("loadScrubProgress failed: %v", err)
+	}
+	if !progress.Repair {
+		t.Fatal("expected scrub progress to record repair=true")
+	}
+	if len(progress.CompletedExtents) == 0 {
+		t.Fatal("expected completed extents in scrub progress")
+	}
+
+	resumed, err := NewCoordinator(metaPath, journalPath).Scrub(true)
+	if err != nil {
+		t.Fatalf("resumed scrub failed: %v", err)
+	}
+	if !resumed.Resumed {
+		t.Fatal("expected resumed scrub to report Resumed=true")
+	}
+	if resumed.ExtentsSkipped == 0 && resumed.ParityGroupsSkipped == 0 {
+		t.Fatal("expected resumed scrub to report skipped checkpointed work")
+	}
+	if !resumed.Healthy {
+		t.Fatalf("expected resumed scrub to complete healthy, got %+v", resumed)
+	}
 }
 
 // TestCategoryF_ScrubRepairDoesntCorruptHealthyExtents verifies that repair

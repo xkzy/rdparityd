@@ -25,10 +25,10 @@ func TestPoolNameReturnsPoolNameAfterWrite(t *testing.T) {
 
 	payload := bytes.Repeat([]byte("hello"), 1024)
 	if _, err := coord.WriteFile(WriteRequest{
-		PoolName:    "mypool",
-		LogicalPath: "/file.txt",
+		PoolName:       "mypool",
+		LogicalPath:    "/file.txt",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
@@ -72,10 +72,10 @@ func TestReadMetaReturnsCachedStateAfterWrite(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	if _, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/file.txt",
+		PoolName:       "demo",
+		LogicalPath:    "/file.txt",
 		AllowSynthetic: true,
-		SizeBytes:   512,
+		SizeBytes:      512,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}

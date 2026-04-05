@@ -144,8 +144,8 @@ func TestE2DetectsWrongChecksumAlg(t *testing.T) {
 	writeAndCommit(t, metadataPath, journalPath, "/shares/demo/e2.bin", 4096)
 	state := loadState(t, metadataPath)
 
-	// Tamper with the checksum_alg field.
-	state.Extents[0].ChecksumAlg = "blake3"
+	// Tamper with the checksum_alg field to something that is not blake3.
+	state.Extents[0].ChecksumAlg = "sha256"
 
 	vs := CheckStateInvariants(state)
 	assertViolation(t, vs, "E2")

@@ -6,7 +6,7 @@ import "time"
 // checksums. It is defined here (in the metadata package) so that both the
 // journal layer and the allocator can reference it without creating a circular
 // import.
-const ChecksumAlgorithm = "sha256"
+const ChecksumAlgorithm = "blake3"
 
 type Pool struct {
 	PoolID          string    `json:"pool_id"`

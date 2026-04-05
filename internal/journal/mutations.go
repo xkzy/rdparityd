@@ -40,6 +40,11 @@ func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) 
 	if c == nil {
 		return RenameResult{}, fmt.Errorf("coordinator is nil")
 	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return RenameResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -49,8 +54,8 @@ func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) 
 	if newPath == "" {
 		return RenameResult{}, fmt.Errorf("new path is required")
 	}
-	if oldPath == newPath {
-		return RenameResult{OldPath: oldPath, NewPath: newPath}, nil
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return RenameResult{}, err
 	}
 
 	state, err := c.loadState(metadata.SampleState{})
@@ -62,6 +67,7 @@ func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) 
 	for i, file := range state.Files {
 		if file.Path == oldPath {
 			fileIdx = i
+			continue
 		}
 		if file.Path == newPath {
 			return RenameResult{}, fmt.Errorf("rename %q -> %q: destination already exists", oldPath, newPath)
@@ -69,6 +75,9 @@ func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) 
 	}
 	if fileIdx == -1 {
 		return RenameResult{}, fmt.Errorf("rename %q: file not found", oldPath)
+	}
+	if oldPath == newPath {
+		return RenameResult{OldPath: oldPath, NewPath: newPath}, nil
 	}
 
 	state.Files[fileIdx].Path = newPath

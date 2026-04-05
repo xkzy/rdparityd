@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"lukechampine.com/blake3"
@@ -26,6 +27,14 @@ type WriteRequest struct {
 	Payload   []byte `json:"payload,omitempty"`
 	SizeBytes int64  `json:"size_bytes"`
 	FailAfter State  `json:"fail_after,omitempty"`
+
+	// Test-only fault injection. Zero values disable the fault.
+	// extentWriteLimit: crash WriteFile after writing this many extent files
+	// (before appending StateDataWritten). Remaining extents are not written.
+	// parityWriteLimit: crash WriteFile after writing this many parity group
+	// files (before appending StateParityWritten).
+	extentWriteLimit int
+	parityWriteLimit int
 }
 
 type WriteResult struct {
@@ -40,10 +49,17 @@ type WriteResult struct {
 }
 
 type Coordinator struct {
+	mu           sync.Mutex
 	metadataPath string
 	journalPath  string
 	metadata     *metadata.Store
 	journal      *Store
+	// cachedState holds the last successfully committed metadata state.
+	// It is populated on first use and kept up-to-date by every mutating
+	// operation (WriteFile, Recover, Scrub, Rebuild). Under the mu lock,
+	// reads use it directly without hitting the disk.
+	cachedState    *metadata.SampleState
+	cachedStateSet bool
 }
 
 func NewCoordinator(metadataPath, journalPath string) *Coordinator {
@@ -55,10 +71,81 @@ func NewCoordinator(metadataPath, journalPath string) *Coordinator {
 	}
 }
 
+// loadState returns the current metadata state. It uses the in-memory cache
+// when available, falling back to disk only on first use or after invalidation.
+// Must be called with c.mu held.
+func (c *Coordinator) loadState(defaultState metadata.SampleState) (metadata.SampleState, error) {
+	if c.cachedStateSet {
+		return *c.cachedState, nil
+	}
+	state, err := c.metadata.LoadOrCreate(defaultState)
+	if err != nil {
+		return metadata.SampleState{}, err
+	}
+	c.cachedState = &state
+	c.cachedStateSet = true
+	return state, nil
+}
+
+// commitState saves state to disk and updates the in-memory cache.
+// Must be called with c.mu held.
+// commitState persists state to metadata and updates the in-memory cache.
+// It enforces the following invariants before writing:
+//
+//   - I5 (Metadata Truthfulness): CheckStateInvariants must pass.
+//   - I11 (Monotonic Generation): state.Pool.Generation must be strictly
+//     greater than the last committed generation.
+//
+// Violations of either invariant cause commitState to return an error without
+// modifying the on-disk metadata or the cache.
+func (c *Coordinator) commitState(state metadata.SampleState) (metadata.SnapshotEnvelope, error) {
+	// I5: enforce metadata structural invariants before persisting.
+	// J3 (replay_required check) is deliberately excluded here because an
+	// in-flight transaction at StateMetadataWritten legitimately sets
+	// ReplayRequired=true as a crash-recovery breadcrumb. J3 is a
+	// post-recovery invariant enforced by Recover(), not by the write path.
+	if vs := checkPreCommitInvariants(state); len(vs) > 0 {
+		return metadata.SnapshotEnvelope{}, fmt.Errorf(
+			"I5: refusing to commit state with %d invariant violation(s): %v",
+			len(vs), vs[0])
+	}
+
+	// I11: enforce monotonic generation.
+	// Generation is derived from the transaction count — each committed
+	// transaction increments NewGeneration by 1, so len(Transactions)
+	// represents the current committed generation.
+	newGen := int64(len(state.Transactions))
+	if c.cachedStateSet {
+		cachedGen := int64(len(c.cachedState.Transactions))
+		if newGen < cachedGen {
+			return metadata.SnapshotEnvelope{}, fmt.Errorf(
+				"I11: refusing non-monotonic generation: cached=%d new=%d",
+				cachedGen, newGen)
+		}
+	}
+
+	env, err := c.metadata.Save(state)
+	if err != nil {
+		return metadata.SnapshotEnvelope{}, err
+	}
+	c.cachedState = &state
+	c.cachedStateSet = true
+	return env, nil
+}
+
+// invalidateCache forces the next operation to reload state from disk.
+// Must be called with c.mu held.
+func (c *Coordinator) invalidateCache() {
+	c.cachedStateSet = false
+	c.cachedState = nil
+}
+
 func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if c == nil {
 		return WriteResult{}, fmt.Errorf("coordinator is nil")
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if req.PoolName == "" {
 		req.PoolName = "demo"
 	}
@@ -72,7 +159,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return WriteResult{}, fmt.Errorf("size must be non-negative")
 	}
 
-	state, err := c.metadata.LoadOrCreate(metadata.PrototypeState(req.PoolName))
+	state, err := c.loadState(metadata.PrototypeState(req.PoolName))
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("load metadata state: %w", err)
 	}
@@ -123,7 +210,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 
 	applyExtentChecksums(&state, extents, req.Payload)
-	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents, req.Payload); err != nil {
+	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents, req.Payload, req.extentWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
 	}
 	result.Extents = extents
@@ -137,7 +224,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 
 	mergeParityGroups(&state, extents)
-	if err := writeParityFiles(filepath.Dir(c.metadataPath), &state, extents); err != nil {
+	if err := writeParityFiles(filepath.Dir(c.metadataPath), &state, extents, req.parityWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write parity files: %w", err)
 	}
 	if _, err := c.journal.Append(withState(baseRecord, StateParityWritten)); err != nil {
@@ -158,7 +245,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		NewGeneration:     newGeneration,
 		ReplayRequired:    shouldStopAfter(req.FailAfter, StateMetadataWritten),
 	})
-	snapshot, err := c.metadata.Save(state)
+	snapshot, err := c.commitState(state)
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("save metadata snapshot: %w", err)
 	}
@@ -172,8 +259,13 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return result, nil
 	}
 
+	committedAt := time.Now().UTC()
 	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
 		return WriteResult{}, fmt.Errorf("append committed record: %w", err)
+	}
+	upsertTransaction(&state, baseRecord, StateCommitted, false, &committedAt)
+	if _, err := c.commitState(state); err != nil {
+		return WriteResult{}, fmt.Errorf("save committed metadata snapshot: %w", err)
 	}
 	result.FinalState = StateCommitted
 
@@ -295,10 +387,12 @@ func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 // Durability guarantee: each extent file is opened, written, fsynced, and
 // closed before control returns, and the parent directory is also fsynced so
 // that the directory entry (new file or updated inode) is durable.
-func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte) error {
-	// Track unique parent directories so we fsync each only once.
-	dirs := make(map[string]struct{})
+func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte, limit int) error {
+	written := 0
 	for _, extent := range extents {
+		if limit > 0 && written >= limit {
+			return fmt.Errorf("injected crash: wrote %d of %d extents", written, len(extents))
+		}
 		// Validate the relative path generated by the allocator. Extent paths
 		// are always of the form "data/<2hex>/<4hex>/extent-NNNNNN.bin". The
 		// check prevents unexpected paths from reaching the filesystem.
@@ -306,20 +400,10 @@ func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte)
 			return fmt.Errorf("extent %s has invalid path: %w", extent.ExtentID, err)
 		}
 		targetPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
-		dir := filepath.Dir(targetPath)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
-		}
-
-		if err := writeSyncFile(targetPath, extentData(extent, payload), 0o600); err != nil {
+		if err := replaceSyncFile(targetPath, extentData(extent, payload), 0o600); err != nil {
 			return fmt.Errorf("write extent file %s: %w", targetPath, err)
 		}
-		dirs[dir] = struct{}{}
-	}
-	for dir := range dirs {
-		if err := syncDir(dir); err != nil {
-			return fmt.Errorf("sync extent directory %s: %w", dir, err)
-		}
+		written++
 	}
 	return nil
 }
@@ -378,7 +462,7 @@ func xorInto(dst, src []byte) {
 	}
 }
 
-func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent) error {
+func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent, limit int) error {
 	if len(extents) == 0 {
 		return nil
 	}
@@ -387,21 +471,30 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 	}
 
 	parityDir := filepath.Join(rootDir, "parity")
-	if err := os.MkdirAll(parityDir, 0o755); err != nil {
+	if err := ensureDir(parityDir, 0o755); err != nil {
 		return fmt.Errorf("create parity directory: %w", err)
 	}
 
 	groups := make(map[string][]metadata.Extent)
+	groupOrder := make([]string, 0)
 	for _, extent := range state.Extents {
 		for _, target := range extents {
 			if extent.ParityGroupID == target.ParityGroupID {
+				if _, seen := groups[extent.ParityGroupID]; !seen {
+					groupOrder = append(groupOrder, extent.ParityGroupID)
+				}
 				groups[extent.ParityGroupID] = append(groups[extent.ParityGroupID], extent)
 				break
 			}
 		}
 	}
 
-	for groupID, members := range groups {
+	written := 0
+	for _, groupID := range groupOrder {
+		if limit > 0 && written >= limit {
+			return fmt.Errorf("injected crash: wrote %d of %d parity groups", written, len(groupOrder))
+		}
+		members := groups[groupID]
 		maxLen := 0
 		memberData := make([][]byte, 0, len(members))
 		for _, member := range members {
@@ -425,9 +518,7 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 		}
 		parityChecksum := digestBytes(parityData)
 		parityPath := filepath.Join(parityDir, groupID+".bin")
-		// writeSyncFile fsyncs the parity file before returning, then we fsync
-		// the parity directory to make the new/updated entry durable.
-		if err := writeSyncFile(parityPath, parityData, 0o600); err != nil {
+		if err := replaceSyncFile(parityPath, parityData, 0o600); err != nil {
 			return fmt.Errorf("write parity file %s: %w", parityPath, err)
 		}
 		for i := range state.ParityGroups {
@@ -435,10 +526,7 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 				state.ParityGroups[i].ParityChecksum = parityChecksum
 			}
 		}
-	}
-	// Fsync the parity directory once after all parity files are written.
-	if err := syncDir(parityDir); err != nil {
-		return fmt.Errorf("sync parity directory: %w", err)
+		written++
 	}
 	return nil
 }

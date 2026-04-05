@@ -50,6 +50,12 @@ type RenameResult struct {
 	NewPath string `json:"new_path"`
 }
 
+type DeleteResult struct {
+	TxID           string `json:"tx_id"`
+	RemovedExtents int    `json:"removed_extents"`
+	FreedBytes     int64  `json:"freed_bytes"`
+}
+
 // RenameFile changes the logical path of a file without touching any extent
 // data or parity data.
 //
@@ -417,6 +423,123 @@ func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) (TruncateR
 	return TruncateResult{
 		TxID:           txID,
 		RemovedExtents: len(toRemove),
+		FreedBytes:     freedBytes,
+	}, nil
+}
+
+// DeleteFile removes a file and all its extents from the pool.
+func (c *Coordinator) DeleteFile(logicalPath string) (DeleteResult, error) {
+	if c == nil {
+		return DeleteResult{}, fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return DeleteResult{}, fmt.Errorf("logical path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return DeleteResult{}, err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return DeleteResult{}, fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var fileIndex int = -1
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			fileIndex = i
+			break
+		}
+	}
+	if fileIndex < 0 {
+		return DeleteResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	file := state.Files[fileIndex]
+	var fileExtents []metadata.Extent
+	for _, ext := range state.Extents {
+		if ext.FileID == file.FileID {
+			fileExtents = append(fileExtents, ext)
+		}
+	}
+
+	if len(fileExtents) == 0 {
+		state.Files = append(state.Files[:fileIndex], state.Files[fileIndex+1:]...)
+		if _, err := c.commitState(state); err != nil {
+			return DeleteResult{}, fmt.Errorf("save metadata: %w", err)
+		}
+		return DeleteResult{TxID: generateTxID("tx-delete"), RemovedExtents: 0, FreedBytes: 0}, nil
+	}
+
+	txID := generateTxID("tx-delete")
+	now := time.Now().UTC()
+
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:              txID,
+		State:             string(StateCommitted),
+		StartedAt:         now,
+		AffectedExtentIDs: extentIDs(fileExtents),
+	})
+
+	extentIDSet := make(map[string]bool)
+	for _, ext := range fileExtents {
+		extentIDSet[ext.ExtentID] = true
+	}
+
+	var remainingExtents []metadata.Extent
+	for _, ext := range state.Extents {
+		if !extentIDSet[ext.ExtentID] {
+			remainingExtents = append(remainingExtents, ext)
+		}
+	}
+	state.Extents = remainingExtents
+
+	for i, group := range state.ParityGroups {
+		var newMembers []string
+		for _, memberID := range group.MemberExtentIDs {
+			if !extentIDSet[memberID] {
+				newMembers = append(newMembers, memberID)
+			}
+		}
+		state.ParityGroups[i].MemberExtentIDs = newMembers
+	}
+
+	var freedBytes int64
+	for i, disk := range state.Disks {
+		for _, ext := range fileExtents {
+			if ext.DataDiskID == disk.DiskID {
+				state.Disks[i].FreeBytes += ext.Length
+				freedBytes += ext.Length
+			}
+		}
+	}
+
+	state.Files = append(state.Files[:fileIndex], state.Files[fileIndex+1:]...)
+
+	rootDir := filepath.Dir(c.metadataPath)
+	for _, ext := range fileExtents {
+		extentPath := filepath.Join(rootDir, ext.PhysicalLocator.RelativePath)
+		if err := os.Remove(extentPath); err != nil && !os.IsNotExist(err) {
+			return DeleteResult{}, fmt.Errorf("remove extent file: %w", err)
+		}
+	}
+
+	if _, err := c.commitState(state); err != nil {
+		return DeleteResult{}, fmt.Errorf("save metadata: %w", err)
+	}
+
+	return DeleteResult{
+		TxID:           txID,
+		RemovedExtents: len(fileExtents),
 		FreedBytes:     freedBytes,
 	}, nil
 }

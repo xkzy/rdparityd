@@ -49,10 +49,10 @@ func TestD1_DataDiskMissingAtStartup(t *testing.T) {
 	// Step 1: Write a file to establish extents.
 	payload := makePayload((2 << 20), 1)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d1-missing-startup.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d1-missing-startup.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -114,10 +114,10 @@ func TestD2_DataDiskDisappearsAfterWrite(t *testing.T) {
 	// Write a file.
 	payload := makePayload((1 << 20), 2)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d2-disappears-read.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d2-disappears-read.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -180,10 +180,10 @@ func TestD3_DataDiskDisappearsBeforeSecondWrite(t *testing.T) {
 	// First write.
 	payload1 := makePayload((1 << 20), 3)
 	result1, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d3-file1.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d3-file1.bin",
 		AllowSynthetic: true,
-		Payload:     payload1,
+		Payload:        payload1,
 	})
 	if err != nil {
 		t.Fatalf("First WriteFile: %v", err)
@@ -204,10 +204,10 @@ func TestD3_DataDiskDisappearsBeforeSecondWrite(t *testing.T) {
 	// Attempt second write (should still succeed, but failure is detectable).
 	payload2 := makePayload((512 << 10), 4)
 	_, err = coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d3-file2.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d3-file2.bin",
 		AllowSynthetic: true,
-		Payload:     payload2,
+		Payload:        payload2,
 	})
 	// Write may or may not succeed depending on allocation; the important check
 	// is that analysis detects the failure.
@@ -244,10 +244,10 @@ func TestD4_ParityDiskMissing(t *testing.T) {
 	// Write a file.
 	payload := makePayload((2 << 20), 4)
 	_, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d4-parity-missing.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d4-parity-missing.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -313,10 +313,10 @@ func TestD5_ParityDiskDisappearsAfterFirstWrite(t *testing.T) {
 	// First write.
 	payload1 := makePayload((1 << 20), 5)
 	_, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d5-file1.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d5-file1.bin",
 		AllowSynthetic: true,
-		Payload:     payload1,
+		Payload:        payload1,
 	})
 	if err != nil {
 		t.Fatalf("First WriteFile: %v", err)
@@ -355,10 +355,10 @@ func TestD5_ParityDiskDisappearsAfterFirstWrite(t *testing.T) {
 	// The coordinator will recompute and recreate the parity file as part of the write.
 	payload2 := makePayload((512 << 10), 6)
 	_, err = coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d5-file2.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d5-file2.bin",
 		AllowSynthetic: true,
-		Payload:     payload2,
+		Payload:        payload2,
 	})
 	// Write may or may not succeed; regardless, the pre-write detection was confirmed above.
 }
@@ -377,10 +377,10 @@ func TestD6_ReplacementDiskScenario(t *testing.T) {
 	// Write a file to establish extents and parity.
 	payload := makePayload((2 << 20), 6)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d6-replacement.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d6-replacement.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -432,10 +432,10 @@ func TestD7_ReplacementDiskPartialRebuild(t *testing.T) {
 	// Write a file.
 	payload := makePayload((3 << 20), 7)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d7-partial-rebuild.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d7-partial-rebuild.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -490,10 +490,10 @@ func TestD8_ReplacementDiskFullRebuildWithParityFail(t *testing.T) {
 	// Write a file.
 	payload := makePayload((2 << 20), 8)
 	_, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d8-parity-fail.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d8-parity-fail.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -544,10 +544,10 @@ func TestD9_TwoDisksFail_Unrecoverable(t *testing.T) {
 
 	payload := makePayload((4 << 20), 9)
 	result, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d9-dual-failure.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d9-dual-failure.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -623,10 +623,10 @@ func TestD10_DiskReadErrors_CorruptExtentFile(t *testing.T) {
 
 	payload := makePayload((1 << 20), 10)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/d10-corrupted.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/d10-corrupted.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)

@@ -37,6 +37,12 @@ type ScrubResult struct {
 const maxScrubHistory = 32
 
 func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.scrubWithRepairFailAfter(repair, "")
+}
+
+func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (ScrubResult, error) {
 	if c == nil {
 		return ScrubResult{}, fmt.Errorf("coordinator is nil")
 	}
@@ -47,7 +53,7 @@ func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 		Healthy:   true,
 	}
 
-	state, err := c.metadata.LoadOrCreate(metadata.PrototypeState("demo"))
+	state, err := c.loadState(metadata.PrototypeState("demo"))
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
@@ -73,7 +79,7 @@ func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 	})
 
 	for _, extent := range extents {
-		_, repaired, err := verifyExtent(rootDir, state, extent, repair)
+		_, repaired, err := verifyExtent(c.metadataPath, c.journal, state, extent, repair, failAfter)
 		if err != nil {
 			result.FailedCount++
 			result.Healthy = false
@@ -125,30 +131,42 @@ func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 	}
 
 	if repair && len(groupsToRepair) > 0 {
-		repairExtents := extentsForParityGroups(state, groupsToRepair)
-		if err := writeParityFiles(rootDir, &state, repairExtents); err != nil {
-			return result, fmt.Errorf("repair parity groups: %w", err)
-		}
 		groupIDs := make([]string, 0, len(groupsToRepair))
 		for groupID := range groupsToRepair {
 			groupIDs = append(groupIDs, groupID)
 		}
 		sort.Strings(groupIDs)
-		result.HealedCount += len(groupIDs)
-		result.HealedParityGroupIDs = append(result.HealedParityGroupIDs, groupIDs...)
 		for _, groupID := range groupIDs {
-			result.Issues = append(result.Issues, ScrubIssue{
-				Kind:          "parity",
-				ParityGroupID: groupID,
-				Status:        "healed",
-				Detail:        "regenerated from member extents",
-			})
+			groupOnly := map[string]struct{}{groupID: struct{}{}}
+			repairExtents := extentsForParityGroups(state, groupOnly)
+			repaired, err := runParityRepair(c.metadataPath, c.journal, &state, groupID, repairExtents, failAfter)
+			if err != nil {
+				result.FailedCount++
+				result.Healthy = false
+				result.Issues = append(result.Issues, ScrubIssue{
+					Kind:          "parity",
+					ParityGroupID: groupID,
+					Status:        "failed",
+					Detail:        err.Error(),
+				})
+				continue
+			}
+			if repaired {
+				result.HealedCount++
+				result.HealedParityGroupIDs = append(result.HealedParityGroupIDs, groupID)
+				result.Issues = append(result.Issues, ScrubIssue{
+					Kind:          "parity",
+					ParityGroupID: groupID,
+					Status:        "healed",
+					Detail:        "regenerated from member extents",
+				})
+			}
 		}
 	}
 
 	result.CompletedAt = time.Now().UTC()
 	appendScrubHistory(&state, result)
-	if _, err := c.metadata.Save(state); err != nil {
+	if _, err := c.commitState(state); err != nil {
 		return result, fmt.Errorf("save metadata snapshot after scrub: %w", err)
 	}
 	return result, nil

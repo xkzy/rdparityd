@@ -11,7 +11,7 @@ import (
 
 func TestJournalAppendRejectsOverlongStringField(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "journal.log"))
-	tooLong := strings.Repeat("x", (1<<16))
+	tooLong := strings.Repeat("x", (1 << 16))
 	_, err := store.Append(Record{
 		TxID:        tooLong,
 		State:       StatePrepared,

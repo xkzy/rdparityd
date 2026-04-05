@@ -64,6 +64,11 @@ func TestB1_CorruptMagicBytesDetected(t *testing.T) {
 	if writeResult.FinalState != StateCommitted {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
+	// Keep a partial write in the journal so the corruption helpers have bytes to corrupt.
+	_, _ = coordinator.WriteFile(WriteRequest{
+		PoolName: "test_pool", LogicalPath: "/test/b1_pending.bin",
+		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
+	})
 
 	// Step 2: Corrupt magic bytes in the journal
 	helper := NewJournalCorruptionHelper(journalPath)
@@ -119,6 +124,10 @@ func TestB2_CorruptTxIDDetected(t *testing.T) {
 	if writeResult.FinalState != StateCommitted {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
+	_, _ = coordinator.WriteFile(WriteRequest{
+		PoolName: "test_pool", LogicalPath: "/test/b2_pending.bin",
+		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
+	})
 
 	// Step 2: Corrupt TxID in the journal payload
 	helper := NewJournalCorruptionHelper(journalPath)
@@ -219,6 +228,10 @@ func TestB4_InvalidChecksumDetected(t *testing.T) {
 	if writeResult.FinalState != StateCommitted {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
+	_, _ = coordinator.WriteFile(WriteRequest{
+		PoolName: "test_pool", LogicalPath: "/test/b4_pending.bin",
+		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
+	})
 
 	// Step 2: Corrupt checksum in the first record
 	helper := NewJournalCorruptionHelper(journalPath)
@@ -455,21 +468,25 @@ func TestB8_ReorderedRecordsDetected(t *testing.T) {
 // ─── B9: RemoveCommitMarker ────────────────────────────────────────────────
 
 // TestB9_RemoveCommitMarkerCausesAbort verifies that removing the final
-// commit record from the journal causes the transaction to be safely aborted
-// during recovery.
+// commit record from a non-committed journal sequence causes the transaction
+// to be safely aborted during recovery. Post-compaction: we simulate this
+// by stopping the write at StateMetadataWritten (which keeps the journal
+// populated), then removing the trailing commit marker via truncation.
 func TestB9_RemoveCommitMarkerCausesAbort(t *testing.T) {
 	root := t.TempDir()
 	metadataPath := filepath.Join(root, "metadata.bin")
 	journalPath := filepath.Join(root, "journal.bin")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	// Step 1: Write and commit
+	// Step 1: Write, stopping at StateMetadataWritten (before commit record).
+	// This is the correct scenario for testing commit-marker removal.
 	payload := makePayload((1 << 20), 61)
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "test_pool",
-		LogicalPath: "/test/b9_nocommit.bin",
+		PoolName:       "test_pool",
+		LogicalPath:    "/test/b9_nocommit.bin",
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
+		FailAfter:      StateMetadataWritten,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)

@@ -112,7 +112,7 @@ func TestLoadRuntimeStateAllowsRecoverableDegradedDiskFailure(t *testing.T) {
 }
 
 func TestJournalEndpointReturnsReplaySummary(t *testing.T) {
-	state := runtimeState{
+	state := &runtimeState{
 		MetadataPath: "/tmp/test-metadata.json",
 		JournalPath:  "/tmp/test-journal.log",
 		JournalSummary: journal.ReplaySummary{
@@ -124,7 +124,7 @@ func TestJournalEndpointReturnsReplaySummary(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/journal", nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -188,7 +188,7 @@ func TestDiagnosticsEndpointReportsRecoveryState(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics", nil)
 	rr := httptest.NewRecorder()
-	newMux(&stateRT).ServeHTTP(rr, req)
+	newMux(stateRT).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -232,7 +232,7 @@ func TestReadEndpointReturnsVerificationResult(t *testing.T) {
 	state := loadRuntimeState("demo", journalPath, metadataPath)
 	req := httptest.NewRequest(http.MethodGet, "/v1/read?path=/shares/demo/http-read.bin", nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -275,7 +275,7 @@ func TestScrubEndpointReturnsRepairSummary(t *testing.T) {
 	state := loadRuntimeState("demo", journalPath, metadataPath)
 	req := httptest.NewRequest(http.MethodPost, "/v1/scrub?repair=true", nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -314,7 +314,7 @@ func TestScrubHistoryEndpointReturnsPersistedRuns(t *testing.T) {
 	state := loadRuntimeState("demo", journalPath, metadataPath)
 	req := httptest.NewRequest(http.MethodGet, "/v1/scrub/history", nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -357,7 +357,7 @@ func TestRebuildEndpointRestoresMissingDataDiskExtent(t *testing.T) {
 	state := loadRuntimeState("demo", journalPath, metadataPath)
 	req := httptest.NewRequest(http.MethodPost, "/v1/rebuild?disk="+targetExtent.DataDiskID, nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -412,7 +412,7 @@ func TestRebuildAllEndpointRestoresMultipleDisks(t *testing.T) {
 	state := loadRuntimeState("demo", journalPath, metadataPath)
 	req := httptest.NewRequest(http.MethodPost, "/v1/rebuild/all", nil)
 	rr := httptest.NewRecorder()
-	newMux(&state).ServeHTTP(rr, req)
+	newMux(state).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)

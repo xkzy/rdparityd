@@ -205,3 +205,30 @@ func TestCoordinatorWriteFileWithRealPayload(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateExtentRelativePath verifies that path traversal attempts and
+// absolute paths are rejected while valid allocator-generated paths are accepted.
+func TestValidateExtentRelativePath(t *testing.T) {
+	valid := []string{
+		"data/ab/cdef/extent-000001.bin",
+		"data/12/3456/extent-000002.bin",
+		"data/ff/ffff/extent-000003.bin",
+	}
+	for _, p := range valid {
+		if err := validateExtentRelativePath(p); err != nil {
+			t.Errorf("valid path %q rejected: %v", p, err)
+		}
+	}
+
+	invalid := []string{
+		"/data/ab/cdef/extent-000001.bin", // absolute
+		"../../etc/passwd",                // traversal
+		"data/../extent-000001.bin",       // traversal with Clean
+		"data//extent-000001.bin",         // non-canonical double slash
+	}
+	for _, p := range invalid {
+		if err := validateExtentRelativePath(p); err == nil {
+			t.Errorf("invalid path %q was accepted but should be rejected", p)
+		}
+	}
+}

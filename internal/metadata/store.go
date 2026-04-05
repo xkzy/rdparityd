@@ -113,6 +113,20 @@ func (s *Store) Save(state SampleState) (SnapshotEnvelope, error) {
 	if err := os.Rename(tmpPath, s.path); err != nil {
 		return SnapshotEnvelope{}, fmt.Errorf("replace metadata snapshot: %w", err)
 	}
+	// Fsync the parent directory so the renamed directory entry is durable.
+	// Without this step a crash after Rename but before the kernel flushes the
+	// directory block could leave the old snapshot visible again.
+	metaDir, err := os.Open(filepath.Dir(s.path))
+	if err != nil {
+		return SnapshotEnvelope{}, fmt.Errorf("open metadata directory for sync: %w", err)
+	}
+	if syncErr := metaDir.Sync(); syncErr != nil {
+		metaDir.Close()
+		return SnapshotEnvelope{}, fmt.Errorf("sync metadata directory: %w", syncErr)
+	}
+	if closeErr := metaDir.Close(); closeErr != nil {
+		return SnapshotEnvelope{}, fmt.Errorf("close metadata directory: %w", closeErr)
+	}
 
 	return envelope, nil
 }

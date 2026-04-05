@@ -21,6 +21,26 @@ func (v InvariantViolation) Error() string {
 	return fmt.Sprintf("[%s] %s (%s): %s", v.Code, v.Kind, v.Entity, v.Message)
 }
 
+// checkPreCommitInvariants runs all structural invariants that must hold
+// before any metadata snapshot is persisted. It deliberately excludes J3
+// (replay_required check) because in-flight writes at StateMetadataWritten
+// legitimately set ReplayRequired=true as a crash-recovery breadcrumb.
+// J3 is enforced post-recovery by Recover(), not by the write path.
+//
+// Invariants checked: M3, M1, M2, E2, E3, P1, P4.
+func checkPreCommitInvariants(state metadata.SampleState) []InvariantViolation {
+	var vs []InvariantViolation
+	vs = append(vs, checkM3UniqueExtentIDs(state)...)
+	vs = append(vs, checkM1FileIDsExist(state)...)
+	vs = append(vs, checkM2DiskIDsExist(state)...)
+	vs = append(vs, checkE2ChecksumAlg(state)...)
+	vs = append(vs, checkE3PositiveLength(state)...)
+	vs = append(vs, checkP1ParityGroupsReferenced(state)...)
+	vs = append(vs, checkP4NoDiskAliasing(state)...)
+	// J3 excluded: see function doc.
+	return vs
+}
+
 // CheckStateInvariants verifies all structural invariants that do not require
 // reading from disk. These are fast enough to run after every metadata mutation.
 //
@@ -404,18 +424,18 @@ func checkJ1RecordChecksums(records []Record) []InvariantViolation {
 // J2: per-transaction state sequences must follow the allowed state machine.
 func checkJ2StateTransitions(records []Record) []InvariantViolation {
 	// Group records by TxID preserving encounter order.
-	grouped := make(map[string][]State)
+	grouped := make(map[string][]Record)
 	order := make([]string, 0)
 	for _, r := range records {
 		if _, seen := grouped[r.TxID]; !seen {
 			order = append(order, r.TxID)
 		}
-		grouped[r.TxID] = append(grouped[r.TxID], r.State)
+		grouped[r.TxID] = append(grouped[r.TxID], r)
 	}
 
 	var vs []InvariantViolation
 	for _, txID := range order {
-		if err := ValidateSequence(grouped[txID]); err != nil {
+		if err := ValidateRecordSequence(grouped[txID]); err != nil {
 			vs = append(vs, InvariantViolation{
 				Code:    "J2",
 				Kind:    "journal",

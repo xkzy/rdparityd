@@ -27,6 +27,7 @@ func crashAndRecover(t *testing.T, dir string, logicalPath string, payload []byt
 	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: logicalPath,
+		AllowSynthetic: true,
 		Payload:     payload,
 		SizeBytes:   sizeBytes,
 		FailAfter:   crashAfter,
@@ -127,6 +128,7 @@ func TestA4_CrashMidDataWriteExtentLimit1(t *testing.T) {
 	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a4.bin",
+		AllowSynthetic: true,
 		Payload:          payload,
 		extentWriteLimit: 1,
 	})
@@ -177,6 +179,7 @@ func TestA7_CrashMidParityWriteParityLimit1(t *testing.T) {
 	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a7.bin",
+		AllowSynthetic: true,
 		Payload:          payload,
 		parityWriteLimit: 1,
 	})
@@ -257,6 +260,7 @@ func TestA12_StateTransitionMetadataWrittenToCommitted(t *testing.T) {
 	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/test/a12.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -352,6 +356,7 @@ func TestAllCategoryACrashPoints(t *testing.T) {
 			_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 				PoolName:    "demo",
 				LogicalPath: "/shares/test/" + tc.name + ".bin",
+				AllowSynthetic: true,
 				Payload:     payload,
 				FailAfter:   tc.crashState,
 			})
@@ -396,6 +401,7 @@ func TestA_RecoveryIdempotentAfterCrash(t *testing.T) {
 	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/test/idempotent.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 		FailAfter:   StateDataWritten,
 	})
@@ -436,6 +442,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 	baseResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/base.bin",
+		AllowSynthetic: true,
 		Payload:     basePayload,
 	})
 	if err != nil || baseResult.FinalState != StateCommitted {
@@ -445,6 +452,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/a.bin",
+		AllowSynthetic: true,
 		Payload:     payloadA,
 		FailAfter:   StatePrepared,
 	})
@@ -455,6 +463,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/b.bin",
+		AllowSynthetic: true,
 		Payload:     payloadB,
 		FailAfter:   StateParityWritten,
 	})

@@ -18,10 +18,31 @@ import (
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
+func validateDiskIdentity(uuid string) error {
+	uuid = strings.TrimSpace(uuid)
+	if uuid == "" {
+		return fmt.Errorf("disk uuid is required")
+	}
+	return nil
+}
+
+func ensureUUIDUnique(state metadata.SampleState, uuid string, exceptDiskID string) error {
+	for _, d := range state.Disks {
+		if d.DiskID == exceptDiskID {
+			continue
+		}
+		if strings.TrimSpace(d.UUID) == uuid {
+			return fmt.Errorf("disk uuid %q already exists on disk %q", uuid, d.DiskID)
+		}
+	}
+	return nil
+}
+
 // AddDisk adds a new disk to the pool and persists the updated metadata.
-// The disk must not already exist (duplicate DiskID is rejected).
+// The disk must not already exist (duplicate DiskID is rejected), and its
+// hardware identity UUID must be explicitly provided and unique.
 // role must be one of DiskRoleData, DiskRoleParity, or DiskRoleMetadata.
-func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint string, capacityBytes int64) error {
+func (c *Coordinator) AddDisk(diskID, uuid string, role metadata.DiskRole, mountpoint string, capacityBytes int64) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
@@ -30,6 +51,9 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 	diskID = strings.TrimSpace(diskID)
 	if diskID == "" {
 		return fmt.Errorf("disk id is required")
+	}
+	if err := validateDiskIdentity(uuid); err != nil {
+		return err
 	}
 	if mountpoint == "" {
 		return fmt.Errorf("mountpoint is required")
@@ -53,9 +77,13 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 			return fmt.Errorf("disk %q already exists", diskID)
 		}
 	}
+	if err := ensureUUIDUnique(state, uuid, ""); err != nil {
+		return err
+	}
 
 	state.Disks = append(state.Disks, metadata.Disk{
 		DiskID:        diskID,
+		UUID:          uuid,
 		Role:          role,
 		Mountpoint:    mountpoint,
 		CapacityBytes: capacityBytes,
@@ -75,8 +103,9 @@ func (c *Coordinator) AddDisk(diskID string, role metadata.DiskRole, mountpoint 
 // The parity reconstruction needed to restore data on newDiskID must be
 // performed separately via RebuildDataDisk(newDiskID).
 //
-// Invariants: newDiskID must not already exist; oldDiskID must exist.
-func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
+// Invariants: newDiskID must not already exist; oldDiskID must exist;
+// newUUID must be non-empty, unique, and must differ from the old disk UUID.
+func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID, newUUID string) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
@@ -89,6 +118,9 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 	}
 	if oldDiskID == newDiskID {
 		return fmt.Errorf("old and new disk id must differ")
+	}
+	if err := validateDiskIdentity(newUUID); err != nil {
+		return err
 	}
 
 	state, err := c.loadState(metadata.PrototypeState("demo"))
@@ -108,12 +140,21 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID string) error {
 	if oldIdx < 0 {
 		return fmt.Errorf("disk %q not found", oldDiskID)
 	}
+	if err := ensureUUIDUnique(state, newUUID, oldDiskID); err != nil {
+		return err
+	}
 
 	// Inherit metadata from old disk, update to new identity.
 	old := state.Disks[oldIdx]
+	if strings.TrimSpace(old.UUID) == "" {
+		return fmt.Errorf("disk %q has no recorded uuid; cannot safely replace without durable identity", oldDiskID)
+	}
+	if old.UUID == newUUID {
+		return fmt.Errorf("replacement disk uuid must differ from old disk uuid %q", old.UUID)
+	}
 	newDisk := metadata.Disk{
 		DiskID:         newDiskID,
-		UUID:           old.UUID,
+		UUID:           newUUID,
 		Role:           old.Role,
 		FilesystemType: old.FilesystemType,
 		Mountpoint:     old.Mountpoint,

@@ -1,7 +1,11 @@
 package journal
 
 import (
+	"bytes"
+	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -30,24 +34,63 @@ import (
 // - No data loss or mix-up between files
 // - No hung goroutines
 func TestCategoryH_ConcurrentWritesToDifferentFiles(t *testing.T) {
-	t.Skip("Category H not yet implemented: concurrent writes baseline test")
-
-	// PSEUDOCODE:
-	// 1. Create coordinator
-	// 2. Define 10 different payloads
-	// 3. Launch 10 goroutines, each writing 1 file with own payload
-	// 4. Wait for all goroutines to complete
-	// 5. Read each file back
-	// 6. Assert: all 10 files readable with correct payloads
-	// 7. Assert: no errors from any write
-
 	root := t.TempDir()
-	_ = NewCoordinator(
+	coord := NewCoordinator(
 		filepath.Join(root, "metadata.json"),
 		filepath.Join(root, "journal.log"),
 	)
 
-	// Implementation to follow
+	const writers = 10
+	payloads := make([][]byte, writers)
+	paths := make([]string, writers)
+	var wg sync.WaitGroup
+	errCh := make(chan error, writers)
+
+	for i := 0; i < writers; i++ {
+		paths[i] = fmt.Sprintf("/concurrency/file-%02d.bin", i)
+		payloads[i] = bytes.Repeat([]byte{byte('A' + i)}, 4096+(i*257))
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := coord.WriteFile(WriteRequest{
+				PoolName:    "demo",
+				LogicalPath: paths[i],
+				Payload:     payloads[i],
+			})
+			if err != nil {
+				errCh <- fmt.Errorf("write %d failed: %w", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < writers; i++ {
+		result, err := coord.ReadFile(paths[i])
+		if err != nil {
+			t.Fatalf("read back %s failed: %v", paths[i], err)
+		}
+		if !result.Verified {
+			t.Fatalf("expected verified read for %s", paths[i])
+		}
+		if !bytes.Equal(result.Data, payloads[i]) {
+			t.Fatalf("data mismatch for %s", paths[i])
+		}
+	}
+
+	state, err := coord.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta failed: %v", err)
+	}
+	if len(state.Files) != writers {
+		t.Fatalf("expected %d files, got %d", writers, len(state.Files))
+	}
+	if violations := CheckStateInvariants(state); len(violations) > 0 {
+		t.Fatalf("state invariants violated after concurrent writes: %v", violations[0])
+	}
 }
 
 // TestCategoryH_ConcurrentReadsWhileWriting verifies that reads don't return
@@ -151,27 +194,107 @@ func TestCategoryH_ConcurrentWriteToSameFile(t *testing.T) {
 // - Files A and B both readable with correct data
 // - No interference between operations
 func TestCategoryH_WriteAndRepairRaceCondition(t *testing.T) {
-	t.Skip("Category H not yet implemented: write-repair race condition handling")
-
-	// PSEUDOCODE:
-	// 1. Write files A and B
-	// 2. Launch writer goroutine to write new file C
-	// 3. Simultaneously corrupt extent in file B
-	// 4. Launch repair goroutine for file B
-	// 5. Wait for both goroutines to complete
-	// 6. Read files B and C
-	// 7. Assert: both writes/repairs succeeded
-	// 8. Assert: file B repaired correctly
-	// 9. Assert: file C written correctly
-	// 10. Assert: no data loss or corruption
-
 	root := t.TempDir()
-	_ = NewCoordinator(
+	coord := NewCoordinator(
 		filepath.Join(root, "metadata.json"),
 		filepath.Join(root, "journal.log"),
 	)
 
-	// Implementation to follow
+	payloadA := bytes.Repeat([]byte("A"), 8192)
+	payloadB := bytes.Repeat([]byte("B"), (1<<20)+333)
+	payloadC := bytes.Repeat([]byte("C"), 16384)
+
+	if _, err := coord.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/race/a.bin",
+		Payload:     payloadA,
+	}); err != nil {
+		t.Fatalf("initial write A failed: %v", err)
+	}
+	writeB, err := coord.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/race/b.bin",
+		Payload:     payloadB,
+	})
+	if err != nil {
+		t.Fatalf("initial write B failed: %v", err)
+	}
+	if len(writeB.Extents) == 0 {
+		t.Fatal("expected extents for file B")
+	}
+
+	// Corrupt one extent from B before the race begins so the repair path has
+	// real work to do while another write commits.
+	extentPath := filepath.Join(root, writeB.Extents[0].PhysicalLocator.RelativePath)
+	corrupt, err := os.ReadFile(extentPath)
+	if err != nil {
+		t.Fatalf("read extent for corruption failed: %v", err)
+	}
+	corrupt[0] ^= 0x7f
+	if err := os.WriteFile(extentPath, corrupt, 0o600); err != nil {
+		t.Fatalf("corrupt extent write failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: "/race/c.bin",
+			Payload:     payloadC,
+		}); err != nil {
+			errCh <- fmt.Errorf("concurrent write C failed: %w", err)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := coord.ReadFile("/race/b.bin")
+		if err != nil {
+			errCh <- fmt.Errorf("concurrent repair/read B failed: %w", err)
+			return
+		}
+		if !bytes.Equal(result.Data, payloadB) {
+			errCh <- fmt.Errorf("repaired B data mismatch")
+		}
+		if !result.Verified {
+			errCh <- fmt.Errorf("repaired B not marked verified")
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	resultB, err := coord.ReadFile("/race/b.bin")
+	if err != nil {
+		t.Fatalf("final read B failed: %v", err)
+	}
+	if !bytes.Equal(resultB.Data, payloadB) {
+		t.Fatal("final B data mismatch after repair race")
+	}
+
+	resultC, err := coord.ReadFile("/race/c.bin")
+	if err != nil {
+		t.Fatalf("final read C failed: %v", err)
+	}
+	if !bytes.Equal(resultC.Data, payloadC) {
+		t.Fatal("final C data mismatch after write race")
+	}
+
+	state, err := coord.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta failed: %v", err)
+	}
+	if violations := CheckStateInvariants(state); len(violations) > 0 {
+		t.Fatalf("state invariants violated after write/repair race: %v", violations[0])
+	}
 }
 
 // TestCategoryH_ConcurrentScrubAndWrite verifies that scrub and write operations

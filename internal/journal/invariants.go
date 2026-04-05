@@ -74,6 +74,44 @@ func CheckIntegrityInvariants(rootDir string, state metadata.SampleState) []Inva
 	return vs
 }
 
+// CheckTargetedWriteIntegrity verifies integrity only for the extents and
+// parity groups touched by a just-committed write. Unlike the full-pool
+// CheckIntegrityInvariants, this is safe to run on the write path even when
+// unrelated extents elsewhere in the pool are already degraded and awaiting
+// scrub/repair.
+func CheckTargetedWriteIntegrity(rootDir string, state metadata.SampleState, extents []metadata.Extent) []InvariantViolation {
+	if len(extents) == 0 {
+		return nil
+	}
+	vs := CheckStateInvariants(state)
+
+	affectedExtentIDs := make(map[string]struct{}, len(extents))
+	affectedGroupIDs := make(map[string]struct{}, len(extents))
+	for _, extent := range extents {
+		affectedExtentIDs[extent.ExtentID] = struct{}{}
+		if extent.ParityGroupID != "" {
+			affectedGroupIDs[extent.ParityGroupID] = struct{}{}
+		}
+	}
+
+	for _, v := range checkE1ExtentChecksums(rootDir, state) {
+		if _, ok := affectedExtentIDs[v.Entity]; ok {
+			vs = append(vs, v)
+		}
+	}
+	for _, v := range checkP2ParityChecksums(rootDir, state) {
+		if _, ok := affectedGroupIDs[v.Entity]; ok {
+			vs = append(vs, v)
+		}
+	}
+	for _, v := range checkP3ParityXOR(rootDir, state) {
+		if _, ok := affectedGroupIDs[v.Entity]; ok {
+			vs = append(vs, v)
+		}
+	}
+	return vs
+}
+
 // CheckJournalInvariants verifies that journal records are internally consistent
 // and follow the allowed state machine. This can be called on any []Record
 // slice loaded from the journal file.

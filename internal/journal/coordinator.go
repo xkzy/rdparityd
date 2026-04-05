@@ -21,12 +21,16 @@ const ChecksumAlgorithm = metadata.ChecksumAlgorithm
 type WriteRequest struct {
 	PoolName    string `json:"pool_name"`
 	LogicalPath string `json:"logical_path"`
-	// Payload holds the real user data to write. When set, SizeBytes is derived
-	// from len(Payload). When nil, SizeBytes controls allocation and synthetic
-	// data is written (useful for demos and tests).
-	Payload   []byte `json:"payload,omitempty"`
-	SizeBytes int64  `json:"size_bytes"`
-	FailAfter State  `json:"fail_after,omitempty"`
+	// Payload holds the real user data to write. In production paths, writes
+	// must provide real payload bytes. Synthetic extent generation is permitted
+	// only when AllowSynthetic is explicitly set for demos/tests.
+	Payload []byte `json:"payload,omitempty"`
+	// AllowSynthetic explicitly opts into writing deterministic synthetic bytes
+	// when Payload is nil. This exists only for tests, demos, and simulation
+	// tooling. Production callers must provide Payload.
+	AllowSynthetic bool  `json:"allow_synthetic,omitempty"`
+	SizeBytes      int64 `json:"size_bytes"`
+	FailAfter      State `json:"fail_after,omitempty"`
 
 	// Test-only fault injection. Zero values disable the fault.
 	// extentWriteLimit: crash WriteFile after writing this many extent files
@@ -158,6 +162,10 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if req.SizeBytes < 0 {
 		return WriteResult{}, fmt.Errorf("size must be non-negative")
 	}
+	if req.Payload == nil && !req.AllowSynthetic {
+		return WriteResult{}, fmt.Errorf(
+			"payload is required for production writes; synthetic data requires explicit AllowSynthetic opt-in")
+	}
 
 	state, err := c.loadState(metadata.PrototypeState(req.PoolName))
 	if err != nil {
@@ -269,12 +277,12 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 	result.FinalState = StateCommitted
 
-	// Phase 3 — Enforce invariants: verify structural consistency immediately
-	// after commit. A violation here means the just-committed write left the
-	// storage system in an invalid state and must be surfaced immediately rather
-	// than discovered silently during a later read or scrub.
+	// Phase 3 — Enforce invariants for the data touched by this write. The write
+	// path must prove that its own extents/parity are durable and self-consistent,
+	// but it must not fail because of unrelated preexisting corruption elsewhere
+	// in the pool; that broader health signal belongs to scrub/startup admission.
 	rootDir := filepath.Dir(c.metadataPath)
-	if violations := CheckIntegrityInvariants(rootDir, state); len(violations) > 0 {
+	if violations := CheckTargetedWriteIntegrity(rootDir, state, extents); len(violations) > 0 {
 		return WriteResult{}, fmt.Errorf("invariant violation after commit: %v", violations[0])
 	}
 
@@ -291,10 +299,11 @@ func shouldStopAfter(target, current State) bool {
 	return target != "" && target == current
 }
 
-// applyExtentChecksums computes and stores SHA-256 checksums for each extent.
+// applyExtentChecksums computes and stores BLAKE3 checksums for each extent.
 // When payload is non-nil, checksums are derived from the corresponding slice
 // of real user data. When payload is nil, checksums are computed from
-// deterministic synthetic data so that demos and tests remain self-consistent.
+// deterministic synthetic data so that explicitly opted-in demos and tests
+// remain self-consistent.
 func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent, payload []byte) {
 	checksums := make(map[string]string, len(extents))
 	for i := range extents {
@@ -314,7 +323,8 @@ func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent
 
 // extentData returns the bytes for an extent. When payload is non-nil it slices
 // the real user data; otherwise it falls back to deterministic synthetic data so
-// that demo and test paths remain self-consistent without requiring real input.
+// that explicitly opted-in demo and test paths remain self-consistent without
+// requiring real input.
 func extentData(extent metadata.Extent, payload []byte) []byte {
 	if payload != nil {
 		return clampedPayloadSlice(payload, extent.LogicalOffset, extent.Length)

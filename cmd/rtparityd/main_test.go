@@ -19,6 +19,7 @@ func TestLoadRuntimeStateRollsForwardReplayRequiredWrite(t *testing.T) {
 	result, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/startup-replay.bin",
+		AllowSynthetic: true,
 		SizeBytes:   4096,
 		FailAfter:   journal.StateDataWritten,
 	})
@@ -54,6 +55,59 @@ func TestLoadRuntimeStateCreatesMetadataSnapshot(t *testing.T) {
 	}
 	if len(state.Prototype.Disks) == 0 {
 		t.Fatal("expected prototype disks to be loaded")
+	}
+	if state.StartupAdmission.Status != "degraded" && state.StartupAdmission.Status != "ok" {
+		t.Fatalf("expected first boot to be admitted, got %#v", state.StartupAdmission)
+	}
+}
+
+func TestLoadRuntimeStateRefusesCorruptMetadataEmptyJournal(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	if err := os.WriteFile(metadataPath, []byte("corrupt"), 0o600); err != nil {
+		t.Fatalf("write corrupt metadata: %v", err)
+	}
+	if err := os.WriteFile(journalPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("write empty journal: %v", err)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	if state.StartupAdmission.Status != "refuse" {
+		t.Fatalf("expected refused startup, got %#v", state.StartupAdmission)
+	}
+	if state.healthStatus() != "error" {
+		t.Fatalf("expected healthStatus=error, got %q", state.healthStatus())
+	}
+}
+
+func TestLoadRuntimeStateAllowsRecoverableDegradedDiskFailure(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coord.WriteFile(journal.WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/degraded.bin",
+		AllowSynthetic: true,
+		SizeBytes:      1<<20 + 17,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if len(writeResult.Extents) == 0 {
+		t.Fatal("expected extents")
+	}
+	missingExtentPath := filepath.Join(filepath.Dir(metadataPath), writeResult.Extents[0].PhysicalLocator.RelativePath)
+	if err := os.Remove(missingExtentPath); err != nil {
+		t.Fatalf("remove extent: %v", err)
+	}
+
+	state := loadRuntimeState("demo", journalPath, metadataPath)
+	if state.StartupAdmission.Status != "degraded" {
+		t.Fatalf("expected degraded startup, got %#v", state.StartupAdmission)
+	}
+	if state.healthStatus() != "degraded" {
+		t.Fatalf("expected healthStatus=degraded, got %q", state.healthStatus())
 	}
 }
 
@@ -93,6 +147,7 @@ func TestDiagnosticsEndpointReportsRecoveryState(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-diagnostics.bin",
+		AllowSynthetic: true,
 		SizeBytes:   4096,
 	})
 	if err != nil {
@@ -167,6 +222,7 @@ func TestReadEndpointReturnsVerificationResult(t *testing.T) {
 	_, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-read.bin",
+		AllowSynthetic: true,
 		SizeBytes:   4096,
 	})
 	if err != nil {
@@ -199,6 +255,7 @@ func TestScrubEndpointReturnsRepairSummary(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-scrub.bin",
+		AllowSynthetic: true,
 		SizeBytes:   4096,
 	})
 	if err != nil {
@@ -244,6 +301,7 @@ func TestScrubHistoryEndpointReturnsPersistedRuns(t *testing.T) {
 	_, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-scrub-history.bin",
+		AllowSynthetic: true,
 		SizeBytes:   4096,
 	})
 	if err != nil {
@@ -283,6 +341,7 @@ func TestRebuildEndpointRestoresMissingDataDiskExtent(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-rebuild.bin",
+		AllowSynthetic: true,
 		SizeBytes:   (1 << 20) + 64,
 	})
 	if err != nil {
@@ -324,6 +383,7 @@ func TestRebuildAllEndpointRestoresMultipleDisks(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/demo/http-rebuild-all.bin",
+		AllowSynthetic: true,
 		SizeBytes:   (3 << 20) + 99,
 	})
 	if err != nil {

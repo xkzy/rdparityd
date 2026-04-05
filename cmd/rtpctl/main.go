@@ -204,10 +204,11 @@ func runWriteDemo(args []string) error {
 	}
 
 	req := journal.WriteRequest{
-		PoolName:    *poolName,
-		LogicalPath: *filePath,
-		SizeBytes:   *sizeBytes,
-		FailAfter:   journal.State(*failAfter),
+		PoolName:       *poolName,
+		LogicalPath:    *filePath,
+		AllowSynthetic: *inputFile == "",
+		SizeBytes:      *sizeBytes,
+		FailAfter:      journal.State(*failAfter),
 	}
 
 	if *inputFile != "" {

@@ -20,14 +20,27 @@ type runtimeState struct {
 	// mu protects concurrent access to all mutable runtimeState fields.
 	// Handlers must hold mu.RLock for reads and mu.Lock for writes to
 	// Prototype and JournalSummary.
-	mu             sync.RWMutex
-	StartedAt      time.Time              `json:"started_at"`
-	Prototype      metadata.SampleState   `json:"prototype"`
-	MetadataPath   string                 `json:"metadata_path"`
-	JournalPath    string                 `json:"journal_path"`
-	Recovery       journal.RecoveryResult `json:"recovery"`
-	JournalSummary journal.ReplaySummary  `json:"journal_summary"`
-	StartupError   string                 `json:"startup_error,omitempty"`
+	mu               sync.RWMutex
+	StartedAt        time.Time                    `json:"started_at"`
+	Prototype        metadata.SampleState         `json:"prototype"`
+	MetadataPath     string                       `json:"metadata_path"`
+	JournalPath      string                       `json:"journal_path"`
+	Recovery         journal.RecoveryResult       `json:"recovery"`
+	JournalSummary   journal.ReplaySummary        `json:"journal_summary"`
+	StartupError     string                       `json:"startup_error,omitempty"`
+	StartupAdmission startupAdmission            `json:"startup_admission"`
+}
+
+// startupAdmission is the centralized startup/open decision for the daemon.
+// Status values:
+//   - "ok": safe to start normally
+//   - "degraded": safe to start, but operator attention is required
+//   - "refuse": must not start serving requests
+//
+// A refused startup is a hard gate: the daemon exits before ListenAndServe.
+type startupAdmission struct {
+	Status  string   `json:"status"`
+	Reasons []string `json:"reasons,omitempty"`
 }
 
 func main() {
@@ -55,10 +68,75 @@ func main() {
 		}
 	}
 
+	if state.StartupAdmission.Status == "refuse" {
+		log.Fatalf("refusing startup: %s", strings.Join(state.StartupAdmission.Reasons, "; "))
+	}
+
+	log.Printf("startup admission=%s", state.StartupAdmission.Status)
+	if len(state.StartupAdmission.Reasons) > 0 {
+		log.Printf("startup reasons: %s", strings.Join(state.StartupAdmission.Reasons, "; "))
+	}
+
 	log.Printf("starting rtparityd prototype on %s", *listen)
 	if err := http.ListenAndServe(*listen, newMux(&state)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func isRecoverableMissingFileError(err string) bool {
+	return strings.Contains(err, "file missing or unreadable")
+}
+
+func allRecoverableMissingFileErrors(errs []string) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, err := range errs {
+		if !isRecoverableMissingFileError(err) {
+			return false
+		}
+	}
+	return true
+}
+
+func evaluateStartupAdmission(state runtimeState) startupAdmission {
+	reasons := make([]string, 0)
+	rootDir := filepath.Dir(state.MetadataPath)
+	formatResult := journal.ValidateOnDiskFormats(rootDir, state.MetadataPath, state.JournalPath)
+	analysis := journal.AnalyzeMultiDiskFailures(rootDir, state.Prototype)
+
+	if state.StartupError != "" {
+		reasons = append(reasons, state.StartupError)
+	}
+	if state.JournalSummary.RequiresReplay {
+		reasons = append(reasons, "journal still requires replay after startup recovery")
+	}
+	if analysis != nil && !analysis.RecoveryIsPossible {
+		reasons = append(reasons, analysis.RecommendedAction)
+	}
+
+	degradedReasons := make([]string, 0)
+	if len(formatResult.Errors) > 0 {
+		if analysis != nil && analysis.RecoveryIsPossible && len(analysis.FailedDisks) > 0 && allRecoverableMissingFileErrors(formatResult.Errors) {
+			degradedReasons = append(degradedReasons, formatResult.Errors...)
+		} else {
+			reasons = append(reasons, formatResult.Errors...)
+		}
+	}
+	if len(reasons) > 0 {
+		return startupAdmission{Status: "refuse", Reasons: reasons}
+	}
+
+	if analysis != nil && len(analysis.FailedDisks) > 0 {
+		degradedReasons = append(degradedReasons, "recoverable failed disks present")
+	}
+	if len(formatResult.Warnings) > 0 {
+		degradedReasons = append(degradedReasons, formatResult.Warnings...)
+	}
+	if len(degradedReasons) > 0 {
+		return startupAdmission{Status: "degraded", Reasons: degradedReasons}
+	}
+	return startupAdmission{Status: "ok"}
 }
 
 func loadRuntimeState(poolName, journalPath, metadataPath string) runtimeState {
@@ -89,6 +167,7 @@ func loadRuntimeState(poolName, journalPath, metadataPath string) runtimeState {
 		return state
 	}
 	state.JournalSummary = summary
+	state.StartupAdmission = evaluateStartupAdmission(state)
 	return state
 }
 
@@ -100,13 +179,14 @@ func joinStartupError(current, next string) string {
 }
 
 func (s *runtimeState) healthStatus() string {
-	if s.StartupError != "" {
+	switch s.StartupAdmission.Status {
+	case "refuse":
 		return "error"
-	}
-	if s.JournalSummary.RequiresReplay {
+	case "degraded":
 		return "degraded"
+	default:
+		return "ok"
 	}
-	return "ok"
 }
 
 func diagnosticsView(state *runtimeState) map[string]any {
@@ -117,6 +197,7 @@ func diagnosticsView(state *runtimeState) map[string]any {
 	recovery := state.Recovery
 	summary := state.JournalSummary
 	startupError := state.StartupError
+	admission := state.StartupAdmission
 	status := state.healthStatus()
 	state.mu.RUnlock()
 
@@ -179,6 +260,7 @@ func diagnosticsView(state *runtimeState) map[string]any {
 
 	return map[string]any{
 		"status":                    status,
+		"startup_admission":         admission,
 		"pool_state":                status,
 		"metadata_state":            metadataState,
 		"journal_state":             journalState,

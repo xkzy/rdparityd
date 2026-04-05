@@ -55,6 +55,7 @@ func TestB1_CorruptMagicBytesDetected(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b1_magic.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -109,6 +110,7 @@ func TestB2_CorruptTxIDDetected(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b2_txid.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -155,6 +157,7 @@ func TestB3_CorruptCommitRecordState(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b3_commit.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -207,6 +210,7 @@ func TestB4_InvalidChecksumDetected(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b4_checksum.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -254,6 +258,7 @@ func TestB5_StaleGenerationDetected(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b5_gen.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -305,6 +310,7 @@ func TestB6_DuplicateTransactionHandled(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b6_dup.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -362,6 +368,7 @@ func TestB7_JournalTailGarbageIgnored(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b7_garbage.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -413,6 +420,7 @@ func TestB8_ReorderedRecordsDetected(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b8_reorder.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -460,6 +468,7 @@ func TestB9_RemoveCommitMarkerCausesAbort(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b9_nocommit.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -521,6 +530,7 @@ func TestB10_TruncatedJournalPartialFsync(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "test_pool",
 		LogicalPath: "/test/b10_trunc.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {

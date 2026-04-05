@@ -51,6 +51,7 @@ func TestD1_DataDiskMissingAtStartup(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d1-missing-startup.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -115,6 +116,7 @@ func TestD2_DataDiskDisappearsAfterWrite(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d2-disappears-read.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -180,6 +182,7 @@ func TestD3_DataDiskDisappearsBeforeSecondWrite(t *testing.T) {
 	result1, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d3-file1.bin",
+		AllowSynthetic: true,
 		Payload:     payload1,
 	})
 	if err != nil {
@@ -203,6 +206,7 @@ func TestD3_DataDiskDisappearsBeforeSecondWrite(t *testing.T) {
 	_, err = coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d3-file2.bin",
+		AllowSynthetic: true,
 		Payload:     payload2,
 	})
 	// Write may or may not succeed depending on allocation; the important check
@@ -239,6 +243,7 @@ func TestD4_ParityDiskMissing(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d4-parity-missing.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -307,6 +312,7 @@ func TestD5_ParityDiskDisappearsAfterFirstWrite(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d5-file1.bin",
+		AllowSynthetic: true,
 		Payload:     payload1,
 	})
 	if err != nil {
@@ -348,6 +354,7 @@ func TestD5_ParityDiskDisappearsAfterFirstWrite(t *testing.T) {
 	_, err = coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d5-file2.bin",
+		AllowSynthetic: true,
 		Payload:     payload2,
 	})
 	// Write may or may not succeed; regardless, the pre-write detection was confirmed above.
@@ -369,6 +376,7 @@ func TestD6_ReplacementDiskScenario(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d6-replacement.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -423,6 +431,7 @@ func TestD7_ReplacementDiskPartialRebuild(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d7-partial-rebuild.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -480,6 +489,7 @@ func TestD8_ReplacementDiskFullRebuildWithParityFail(t *testing.T) {
 	_, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d8-parity-fail.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -533,6 +543,7 @@ func TestD9_TwoDisksFail_Unrecoverable(t *testing.T) {
 	result, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d9-dual-failure.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -611,6 +622,7 @@ func TestD10_DiskReadErrors_CorruptExtentFile(t *testing.T) {
 	writeResult, err := coordinator.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/test/d10-corrupted.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {

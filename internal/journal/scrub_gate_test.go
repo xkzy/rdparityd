@@ -21,6 +21,7 @@ func TestGate10_ScrubRepairPathRepairsCorruptedExtent(t *testing.T) {
 	_, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/scrub/repair.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {

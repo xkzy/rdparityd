@@ -65,6 +65,8 @@ func main() {
 		err = runSleepDisk(os.Args[2:])
 	case "sleep-status":
 		err = runSleepStatus(os.Args[2:])
+	case "protection-status":
+		err = runProtectionStatus(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -100,6 +102,7 @@ Usage:
   rtpctl wake-disk [flags]
   rtpctl sleep-disk [flags]
   rtpctl sleep-status [flags]
+  rtpctl protection-status [flags]
 `)
 }
 
@@ -706,6 +709,52 @@ func runSleepStatus(args []string) error {
 	}
 
 	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runProtectionStatus(args []string) error {
+	fset := flag.NewFlagSet("protection-status", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.ProtectionStatus()
+	if err != nil {
+		return fmt.Errorf("get protection status failed: %w", err)
+	}
+
+	state, err := coord.ProtectionState()
+	if err != nil {
+		return fmt.Errorf("get protection state failed: %w", err)
+	}
+
+	type extendedStatus struct {
+		State  metadata.PoolProtectionState `json:"protection_state"`
+		Status journal.ProtectionStatus     `json:"status"`
+	}
+
+	ext := extendedStatus{
+		State:  state,
+		Status: result,
+	}
+
+	output, err := json.MarshalIndent(ext, "", "  ")
 	if err != nil {
 		return err
 	}

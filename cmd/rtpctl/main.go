@@ -67,6 +67,8 @@ func main() {
 		err = runSleepStatus(os.Args[2:])
 	case "protection-status":
 		err = runProtectionStatus(os.Args[2:])
+	case "set-protection":
+		err = runSetProtection(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -103,6 +105,7 @@ Usage:
   rtpctl sleep-disk [flags]
   rtpctl sleep-status [flags]
   rtpctl protection-status [flags]
+  rtpctl set-protection [flags]
 `)
 }
 
@@ -759,5 +762,54 @@ func runProtectionStatus(args []string) error {
 		return err
 	}
 	fmt.Println(string(output))
+	return nil
+}
+
+func runSetProtection(args []string) error {
+	fset := flag.NewFlagSet("set-protection", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	targetState := fset.String("state", "", "target protection state: integrity_only, mirrored, or parity")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	if *targetState == "" {
+		return fmt.Errorf("state is required (integrity_only, mirrored, or parity)")
+	}
+
+	validStates := map[string]metadata.PoolProtectionState{
+		"integrity_only": metadata.ProtectionIntegrityOnly,
+		"mirrored":       metadata.ProtectionMirrored,
+		"parity":         metadata.ProtectionParity,
+	}
+	newState, ok := validStates[*targetState]
+	if !ok {
+		return fmt.Errorf("invalid state: %s (must be integrity_only, mirrored, or parity)", *targetState)
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	state, err := coord.ProtectionState()
+	if err != nil {
+		return fmt.Errorf("get protection state: %w", err)
+	}
+	if state == newState {
+		fmt.Printf("protection state already is %s, no change needed\n", *targetState)
+		return nil
+	}
+
+	if err := coord.SetPoolProtectionState(newState); err != nil {
+		return fmt.Errorf("set protection state: %w", err)
+	}
+
+	fmt.Printf("protection state changed from %s to %s\n", state, newState)
 	return nil
 }

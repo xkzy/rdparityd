@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ type RecoveryResult struct {
 }
 
 func (c *Coordinator) Recover() (RecoveryResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.RecoverWithState(metadata.PrototypeState("demo"))
 }
 
@@ -25,14 +28,43 @@ func (c *Coordinator) RecoverWithState(defaultState metadata.SampleState) (Recov
 		return RecoveryResult{}, fmt.Errorf("coordinator is nil")
 	}
 
-	state, err := c.metadata.LoadOrCreate(defaultState)
-	if err != nil {
-		return RecoveryResult{}, fmt.Errorf("load metadata state for recovery: %w", err)
+	// I12 (Single Authoritative Recovery): distinguish three metadata cases:
+	//   (a) missing (first boot)     — safe to use defaultState
+	//   (b) corrupt (torn/checksum)  — use journal as sole source; refuse if
+	//                                   journal is also empty
+	//   (c) valid                    — use as base, reconcile with journal
+	state, metaErr := c.metadata.Load()
+	metaCorrupt := false
+	if metaErr != nil {
+		if errors.Is(metaErr, os.ErrNotExist) {
+			// Case (a): first boot or metadata file never created.
+			state = defaultState
+		} else {
+			// Case (b): file exists but is unreadable (torn write, wrong magic,
+			// checksum mismatch). Do NOT silently use defaultState here;
+			// we may have committed data that the prototype knows nothing about.
+			metaCorrupt = true
+			state = defaultState // tentative; may be overridden by journal below
+		}
 	}
+	_ = metaCorrupt // used below after journal load
+	// Invalidate cache: recovery may modify state multiple times. The final
+	// commitState calls below will repopulate the cache with the recovered state.
+	c.invalidateCache()
 
 	records, err := c.journal.Load()
 	if err != nil {
 		return RecoveryResult{}, fmt.Errorf("load journal for recovery: %w", err)
+	}
+
+	// I12: if metadata was corrupt AND the journal is empty, we cannot
+	// determine authoritative state. Refuse to start rather than silently
+	// using the prototype (which would claim an empty pool over possibly
+	// committed data).
+	if metaCorrupt && len(records) == 0 {
+		return RecoveryResult{}, fmt.Errorf(
+			"I12: metadata is corrupt and journal is empty; cannot determine " +
+				"authoritative state — manual recovery required")
 	}
 
 	grouped := make(map[string][]Record)
@@ -49,6 +81,7 @@ func (c *Coordinator) RecoverWithState(defaultState metadata.SampleState) (Recov
 		RecoveredTxIDs: []string{},
 		AbortedTxIDs:   []string{},
 	}
+	metadataDirty := false
 
 	for _, txID := range order {
 		txRecords := grouped[txID]
@@ -57,8 +90,28 @@ func (c *Coordinator) RecoverWithState(defaultState metadata.SampleState) (Recov
 		}
 
 		last := effectiveRecoveryRecord(txRecords)
+		if isRepairRecord(last) {
+			if last.State == StateCommitted || last.State == StateAborted {
+				continue
+			}
+			result.AttemptedTxIDs = append(result.AttemptedTxIDs, txID)
+			changed, err := rollForwardRepair(c.metadataPath, c.journal, &state, txRecords)
+			if err != nil {
+				return result, fmt.Errorf("recover repair tx %s: %w", txID, err)
+			}
+			metadataDirty = metadataDirty || changed
+			result.RecoveredTxIDs = append(result.RecoveredTxIDs, txID)
+			continue
+		}
 		switch last.State {
-		case StateCommitted, StateAborted:
+		case StateCommitted:
+			changed, err := reconcileCommittedTransaction(&state, txRecords)
+			if err != nil {
+				return result, fmt.Errorf("reconcile committed tx %s: %w", txID, err)
+			}
+			metadataDirty = metadataDirty || changed
+			continue
+		case StateAborted:
 			continue
 		case StatePrepared:
 			result.AttemptedTxIDs = append(result.AttemptedTxIDs, txID)
@@ -75,6 +128,21 @@ func (c *Coordinator) RecoverWithState(defaultState metadata.SampleState) (Recov
 		default:
 			return result, fmt.Errorf("unsupported recovery state %q for tx %s", last.State, txID)
 		}
+	}
+
+	if metadataDirty {
+		if _, err := c.commitState(state); err != nil {
+			return result, fmt.Errorf("save reconciled metadata state: %w", err)
+		}
+	}
+
+	// Before declaring recovery complete, check that the on-disk state is
+	// actually recoverable. If multiple disks have failed in the same parity
+	// group the data is permanently lost; fail loudly rather than returning a
+	// clean result that masks the loss.
+	analysis := AnalyzeMultiDiskFailures(filepath.Dir(c.metadataPath), state)
+	if !analysis.RecoveryIsPossible {
+		return result, fmt.Errorf("unrecoverable multi-disk failure detected: %s", analysis.RecommendedAction)
 	}
 
 	summary, err := c.journal.Replay()
@@ -121,7 +189,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 
 	if last.State == StateDataWritten || last.State == StateReplayRequired {
 		mergeParityGroups(state, last.Extents)
-		if err := writeParityFiles(rootDir, state, last.Extents); err != nil {
+		if err := writeParityFiles(rootDir, state, last.Extents, 0); err != nil {
 			return err
 		}
 		if _, err := c.journal.Append(withState(last, StateParityWritten)); err != nil {
@@ -143,12 +211,12 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 		// (common for the metadata-written case where we fell through from
 		// data-written in the same recovery pass), skip the disk IO.
 		if parityChecksumStale(rootDir, *state, last.Extents) {
-			if err := writeParityFiles(rootDir, state, last.Extents); err != nil {
+			if err := writeParityFiles(rootDir, state, last.Extents, 0); err != nil {
 				return fmt.Errorf("recompute parity during recovery: %w", err)
 			}
 		}
 		upsertTransaction(state, last, StateMetadataWritten, false, nil)
-		if _, err := c.metadata.Save(*state); err != nil {
+		if _, err := c.commitState(*state); err != nil {
 			return fmt.Errorf("save metadata during recovery: %w", err)
 		}
 		if _, err := c.journal.Append(withState(last, StateMetadataWritten)); err != nil {
@@ -160,7 +228,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 	if last.State == StateMetadataWritten {
 		committedAt := time.Now().UTC()
 		upsertTransaction(state, last, StateCommitted, false, &committedAt)
-		if _, err := c.metadata.Save(*state); err != nil {
+		if _, err := c.commitState(*state); err != nil {
 			return fmt.Errorf("save committed metadata during recovery: %w", err)
 		}
 		if _, err := c.journal.Append(withState(last, StateCommitted)); err != nil {
@@ -197,10 +265,7 @@ func ensureExtentFiles(rootDir string, state metadata.SampleState, extents []met
 		if err != nil {
 			return fmt.Errorf("extent %s file is missing or corrupt and parity reconstruction failed: %w", extent.ExtentID, err)
 		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
-		}
-		if err := os.WriteFile(path, rebuilt, 0o600); err != nil {
+		if err := replaceSyncFile(path, rebuilt, 0o600); err != nil {
 			return fmt.Errorf("write recovered extent %s: %w", extent.ExtentID, err)
 		}
 	}
@@ -284,6 +349,25 @@ func parityChecksumStale(rootDir string, state metadata.SampleState, extents []m
 		}
 	}
 	return false
+}
+
+func reconcileCommittedTransaction(state *metadata.SampleState, txRecords []Record) (bool, error) {
+	if len(txRecords) == 0 {
+		return false, fmt.Errorf("empty transaction record set")
+	}
+	last := txRecords[len(txRecords)-1]
+	if last.File == nil {
+		return false, fmt.Errorf("missing file payload in journal for tx %s", last.TxID)
+	}
+	if len(last.Extents) == 0 {
+		return false, fmt.Errorf("missing extent payload in journal for tx %s", last.TxID)
+	}
+
+	mergeRecoveredFile(state, *last.File, last.Extents)
+	mergeParityGroups(state, last.Extents)
+	committedAt := last.Timestamp
+	upsertTransaction(state, last, StateCommitted, false, &committedAt)
+	return true, nil
 }
 
 func upsertTransaction(state *metadata.SampleState, record Record, txState State, replayRequired bool, committedAt *time.Time) {

@@ -32,7 +32,8 @@ This repository is now a **Phase 1/2 prototype foundation**. It includes:
 
 ```text
 cmd/rtparityd        Prototype daemon with HTTP endpoints
-cmd/rtpctl           CLI for simulation and sample pool state
+cmd/rtpctl           CLI for simulation, sample pool state, and FUSE mount
+internal/fusefs      FUSE filesystem (dirNode, fileNode, fileHandle)
 internal/journal     Transaction states and validation
 internal/metadata    Metadata schema types
 internal/parity      XOR parity simulator and tests
@@ -167,6 +168,34 @@ go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json
 
 See `docs/invariants.md` for the full invariant specification.
 
+### Mount the pool as a FUSE filesystem
+
+```bash
+# Create the mountpoint.
+mkdir -p /mnt/pool
+
+# Mount (blocks until Ctrl-C or fusermount -u /mnt/pool).
+go run ./cmd/rtpctl mount \
+  -mountpoint /mnt/pool \
+  -metadata-path /tmp/rtparityd/metadata.json \
+  -journal-path  /tmp/rtparityd/journal.log \
+  -pool-name demo
+
+# In another terminal: write, list, read via normal POSIX APIs.
+echo "hello rdparityd" > /mnt/pool/shares/demo/hello.txt
+ls -la /mnt/pool/shares/demo/
+cat /mnt/pool/shares/demo/hello.txt
+
+# Unmount.
+fusermount -u /mnt/pool
+```
+
+Files written through the FUSE mount are committed to the coordinator's journaled
+write path (full parity + checksum) on `close(2)`. They survive unmount/remount
+and are also visible via `curl http://127.0.0.1:8080/v1/read?path=/shares/demo/hello.txt`.
+Startup recovery runs automatically on mount so any interrupted prior writes are
+rolled forward before the filesystem begins serving requests.
+
 ### Simulate a crash after `data-written`
 
 ```bash
@@ -182,7 +211,7 @@ The current prototype will automatically roll that interrupted write forward on 
 2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done (Phase 1)
 3. ~~Define and enforce storage invariants.~~ ✅ Done (Phase 2)
 4. ~~Build crash-injection integration tests (Phase 4).~~ ✅ Done (Phase 3)
-5. Introduce a FUSE proof of concept before any full UI work.
+5. ~~Introduce a FUSE proof of concept before any full UI work.~~ ✅ Done (Phase 4)
 
 ## Project pitch
 

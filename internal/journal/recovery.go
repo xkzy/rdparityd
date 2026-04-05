@@ -131,15 +131,21 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 	}
 
 	if last.State == StateParityWritten {
-		// Re-run parity computation so that the checksum stored in metadata
+		// Re-run parity computation to ensure the checksum stored in metadata
 		// accurately reflects the current on-disk parity file. The parity file
-		// was written by the original write path (which may have included extents
-		// from other committed transactions in the same parity group), but the
-		// committed metadata snapshot may still carry an older parity checksum.
-		// writeParityFiles reads all member extents, recomputes the XOR, and
-		// updates state.ParityGroups[i].ParityChecksum in place before we save.
-		if err := writeParityFiles(rootDir, state, last.Extents); err != nil {
-			return fmt.Errorf("recompute parity during recovery: %w", err)
+		// may have been written with additional extents from other committed
+		// transactions, leaving the committed metadata snapshot with a stale
+		// checksum. writeParityFiles recomputes the XOR from all current member
+		// extents, rewrites the parity file only if the checksum has changed, and
+		// updates state.ParityGroups[i].ParityChecksum in place.
+		//
+		// Optimisation: if every parity group already has the correct checksum
+		// (common for the metadata-written case where we fell through from
+		// data-written in the same recovery pass), skip the disk IO.
+		if parityChecksumStale(rootDir, *state, last.Extents) {
+			if err := writeParityFiles(rootDir, state, last.Extents); err != nil {
+				return fmt.Errorf("recompute parity during recovery: %w", err)
+			}
 		}
 		upsertTransaction(state, last, StateMetadataWritten, false, nil)
 		if _, err := c.metadata.Save(*state); err != nil {
@@ -243,6 +249,41 @@ func effectiveRecoveryRecord(txRecords []Record) Record {
 		}
 	}
 	return last
+}
+
+// parityChecksumStale returns true if any parity group referenced by extents
+// has an on-disk parity file whose checksum differs from the stored metadata
+// checksum. A mismatch means the metadata is stale and writeParityFiles must
+// be called to reconcile them.
+func parityChecksumStale(rootDir string, state metadata.SampleState, extents []metadata.Extent) bool {
+	seen := make(map[string]bool)
+	for _, extent := range extents {
+		if seen[extent.ParityGroupID] {
+			continue
+		}
+		seen[extent.ParityGroupID] = true
+
+		var storedChecksum string
+		for _, group := range state.ParityGroups {
+			if group.ParityGroupID == extent.ParityGroupID {
+				storedChecksum = group.ParityChecksum
+				break
+			}
+		}
+		if storedChecksum == "" {
+			return true // group not yet in metadata
+		}
+
+		parityPath := filepath.Join(rootDir, "parity", extent.ParityGroupID+".bin")
+		data, err := os.ReadFile(parityPath)
+		if err != nil {
+			return true // file missing; must recompute
+		}
+		if digestBytes(data) != storedChecksum {
+			return true
+		}
+	}
+	return false
 }
 
 func upsertTransaction(state *metadata.SampleState, record Record, txState State, replayRequired bool, committedAt *time.Time) {

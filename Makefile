@@ -1,4 +1,4 @@
-.PHONY: fmt test run-sim run-journal run-allocate run-write run-read run-scrub run-scrub-history run-rebuild run-rebuild-all run-api
+.PHONY: fmt test run-sim run-journal run-allocate run-write run-read run-scrub run-scrub-history run-rebuild run-rebuild-all run-api run-mount
 
 fmt:
 	gofmt -w ./cmd ./internal
@@ -35,3 +35,6 @@ run-rebuild-all:
 
 run-api:
 	go run ./cmd/rtparityd -listen :8080
+
+run-mount:
+	mkdir -p /tmp/rtparityd-mnt && go run ./cmd/rtpctl mount -mountpoint /tmp/rtparityd-mnt

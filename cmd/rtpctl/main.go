@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
+	"github.com/xkzy/rdparityd/internal/fusefs"
 	"github.com/xkzy/rdparityd/internal/journal"
 	"github.com/xkzy/rdparityd/internal/metadata"
 	"github.com/xkzy/rdparityd/internal/parity"
@@ -43,6 +47,8 @@ func main() {
 		err = runRebuildAllDemo(os.Args[2:])
 	case "check-invariants":
 		err = runCheckInvariants(os.Args[2:])
+	case "mount":
+		err = runMount(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -69,6 +75,7 @@ Usage:
   rtpctl rebuild-demo [flags]
   rtpctl rebuild-all-demo [flags]
   rtpctl check-invariants [flags]
+  rtpctl mount [flags]
 `)
 }
 
@@ -366,4 +373,63 @@ func runCheckInvariants(args []string) error {
 		"violation_count": len(all),
 		"violations":      all,
 	})
+}
+
+func runMount(args []string) error {
+	fset := flag.NewFlagSet("mount", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	poolName := fset.String("pool-name", "demo", "pool name used for new writes")
+	debug := fset.Bool("debug", false, "enable verbose FUSE operation logging")
+	mountpoint := fset.String("mountpoint", "", "directory to mount the pool filesystem at (required)")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	if *mountpoint == "" {
+		return fmt.Errorf("flag -mountpoint is required")
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	// Run startup recovery so any interrupted transactions from a previous
+	// session are resolved before we start serving the filesystem.
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s): %v",
+			len(recovery.RecoveredTxIDs), recovery.RecoveredTxIDs)
+	}
+	if len(recovery.AbortedTxIDs) > 0 {
+		log.Printf("startup recovery: aborted %d transaction(s): %v",
+			len(recovery.AbortedTxIDs), recovery.AbortedTxIDs)
+	}
+
+	srv, err := fusefs.Mount(*mountpoint, coord, fusefs.Options{
+		PoolName: *poolName,
+		Debug:    *debug,
+	})
+	if err != nil {
+		return fmt.Errorf("mount %s: %w", *mountpoint, err)
+	}
+	if err := srv.WaitMount(); err != nil {
+		return fmt.Errorf("wait mount: %w", err)
+	}
+
+	log.Printf("rdparityd pool mounted at %s (pool=%s, metadata=%s)",
+		*mountpoint, *poolName, *metadataPath)
+	log.Printf("press Ctrl-C or run 'fusermount -u %s' to unmount", *mountpoint)
+
+	// Wait for SIGINT/SIGTERM then unmount cleanly.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+	<-ch
+
+	log.Printf("unmounting %s …", *mountpoint)
+	if err := srv.Unmount(); err != nil {
+		return fmt.Errorf("unmount: %w", err)
+	}
+	log.Printf("unmounted successfully")
+	return nil
 }

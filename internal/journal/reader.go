@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,37 @@ import (
 
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
+
+// ReadMeta returns the current metadata state. It returns an empty SampleState
+// (not an error) when no metadata file exists yet. This is used by the FUSE
+// layer to enumerate files and directories without needing to go through the
+// full coordinator write path.
+func (c *Coordinator) ReadMeta() (metadata.SampleState, error) {
+	state, err := c.metadata.Load()
+	if err == nil {
+		return state, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return metadata.SampleState{}, nil
+	}
+	return metadata.SampleState{}, fmt.Errorf("read metadata: %w", err)
+}
+
+// PoolName returns the pool name from the current metadata state, or "demo" if
+// no metadata has been written yet.
+func (c *Coordinator) PoolName() string {
+	state, err := c.metadata.Load()
+	if err != nil || state.Pool.Name == "" {
+		return "demo"
+	}
+	return state.Pool.Name
+}
+
+// RootDir returns the directory that hosts extent and parity files — the same
+// directory that contains the metadata snapshot.
+func (c *Coordinator) RootDir() string {
+	return filepath.Dir(c.metadataPath)
+}
 
 type ReadResult struct {
 	File            metadata.FileRecord `json:"file"`

@@ -78,7 +78,7 @@ func main() {
 	}
 
 	log.Printf("starting rtparityd prototype on %s", *listen)
-	if err := http.ListenAndServe(*listen, newMux(&state)); err != nil {
+	if err := http.ListenAndServe(*listen, newMux(state)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -99,7 +99,7 @@ func allRecoverableMissingFileErrors(errs []string) bool {
 	return true
 }
 
-func evaluateStartupAdmission(state runtimeState) startupAdmission {
+func evaluateStartupAdmission(state *runtimeState) startupAdmission {
 	reasons := make([]string, 0)
 	rootDir := filepath.Dir(state.MetadataPath)
 	formatResult := journal.ValidateOnDiskFormats(rootDir, state.MetadataPath, state.JournalPath)
@@ -139,8 +139,8 @@ func evaluateStartupAdmission(state runtimeState) startupAdmission {
 	return startupAdmission{Status: "ok"}
 }
 
-func loadRuntimeState(poolName, journalPath, metadataPath string) runtimeState {
-	state := runtimeState{
+func loadRuntimeState(poolName, journalPath, metadataPath string) *runtimeState {
+	state := &runtimeState{
 		StartedAt:    time.Now().UTC(),
 		Prototype:    metadata.PrototypeState(poolName),
 		MetadataPath: metadataPath,

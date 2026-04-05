@@ -92,7 +92,7 @@ func loadScrubProgress(metadataPath string) (ScrubProgress, error) {
 	}
 	if string(data[0:4]) != scrubProgressMagic {
 		return ScrubProgress{}, fmt.Errorf("scrub progress: invalid magic")
-		}
+	}
 	repair := data[4]&0x01 == 0x01
 	extentCount := int(binary.BigEndian.Uint32(data[5:9]))
 	groupCount := int(binary.BigEndian.Uint32(data[9:13]))

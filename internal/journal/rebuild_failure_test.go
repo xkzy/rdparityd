@@ -20,10 +20,10 @@ func TestRebuildCrashMidOperationE1(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e1-crash.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e1-crash.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (4 << 20) + 100,
+		SizeBytes:      (4 << 20) + 100,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -65,10 +65,10 @@ func TestRebuildDiskFullE2(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e2-disk-full.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e2-disk-full.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (3 << 20) + 50,
+		SizeBytes:      (3 << 20) + 50,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -107,10 +107,10 @@ func TestRebuildSourceExtentCorruptedE3(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e3-src-corrupt.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e3-src-corrupt.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 75,
+		SizeBytes:      (2 << 20) + 75,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -151,10 +151,10 @@ func TestRebuildParityChecksumMismatchE4(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e4-parity.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e4-parity.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 88,
+		SizeBytes:      (2 << 20) + 88,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -217,10 +217,10 @@ func TestRebuildChecksumCatchesCorruptionE6(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e6-checksum.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e6-checksum.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 44,
+		SizeBytes:      (2 << 20) + 44,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -283,10 +283,10 @@ func TestRebuildWrongGenerationE8(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e8-gen.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e8-gen.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 66,
+		SizeBytes:      (2 << 20) + 66,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -320,10 +320,10 @@ func TestRebuildStaleExtentMappingE9(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e9-stale.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e9-stale.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 77,
+		SizeBytes:      (2 << 20) + 77,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -356,10 +356,10 @@ func TestRebuildMissingFinalVerificationE10(t *testing.T) {
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/test/e10-verify.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/test/e10-verify.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (2 << 20) + 88,
+		SizeBytes:      (2 << 20) + 88,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)

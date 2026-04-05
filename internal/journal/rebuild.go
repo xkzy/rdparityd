@@ -83,6 +83,14 @@ func progressPath(metadataPath, diskID string) string {
 
 // saveRebuildProgress writes the progress record to disk and fsyncs it.
 func saveRebuildProgress(metadataPath string, progress RebuildProgress) error {
+	if len(progress.CompletedExtents) > int(^uint32(0)) {
+		return fmt.Errorf("rebuild progress count exceeds uint32 format limit")
+	}
+	for i, id := range progress.CompletedExtents {
+		if len([]byte(id)) > 1<<16-1 {
+			return fmt.Errorf("completed_extents[%d] too long for rebuild progress encoding: %d bytes > %d", i, len([]byte(id)), 1<<16-1)
+		}
+	}
 	// Encode payload: count × (uint16 len + bytes).
 	var payload []byte
 	for _, id := range progress.CompletedExtents {
@@ -221,6 +229,11 @@ type RebuildAllResult struct {
 // If a progress file from a previous (interrupted) rebuild exists, it resumes
 // from where the last run stopped.
 func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return RebuildResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.rebuildDataDiskWithRepairFailAfter(diskID, "")
@@ -238,6 +251,9 @@ func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfte
 	if result.DiskID == "" {
 		return result, fmt.Errorf("disk id is required")
 	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
+		return result, err
+	}
 
 	state, err := c.loadState(metadata.SampleState{})
 	if err != nil {
@@ -249,6 +265,11 @@ func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfte
 // RebuildAllDataDisks reconstructs extents on all data disks that have any
 // extents registered in metadata.
 func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return RebuildAllResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	result := RebuildAllResult{
@@ -257,6 +278,9 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 	}
 	if c == nil {
 		return result, fmt.Errorf("coordinator is nil")
+	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
+		return result, err
 	}
 
 	state, err := c.loadState(metadata.SampleState{})

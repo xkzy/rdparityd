@@ -322,6 +322,14 @@ func mwritePool(buf *bytes.Buffer, p Pool) {
 	mwriteStr(buf, p.Version)
 	mwriteInt64(buf, p.ExtentSizeBytes)
 	mwriteStr(buf, p.ParityMode)
+	mwriteStr(buf, p.FilesystemType)
+	if p.SleepEnabled {
+		mwriteUint8(buf, 1)
+	} else {
+		mwriteUint8(buf, 0)
+	}
+	mwriteUint32(buf, uint32(p.SleepTimeoutSec))
+	mwriteUint32(buf, uint32(p.SleepMinActiveSec))
 	mwriteInt64(buf, p.CreatedAt.UnixNano())
 }
 
@@ -343,6 +351,24 @@ func mreadPool(r *bytes.Reader) (Pool, error) {
 	if p.ParityMode, err = mreadStr(r); err != nil {
 		return p, err
 	}
+	if p.FilesystemType, err = mreadStr(r); err != nil {
+		return p, err
+	}
+	sleepEnabled, err := mreadUint8(r)
+	if err != nil {
+		return p, err
+	}
+	p.SleepEnabled = sleepEnabled == 1
+	sleepTimeout, err := mreadUint32(r)
+	if err != nil {
+		return p, err
+	}
+	p.SleepTimeoutSec = int(sleepTimeout)
+	sleepMinActive, err := mreadUint32(r)
+	if err != nil {
+		return p, err
+	}
+	p.SleepMinActiveSec = int(sleepMinActive)
 	nano, err := mreadInt64(r)
 	if err != nil {
 		return p, err
@@ -484,6 +510,8 @@ func mwriteExtent(buf *bytes.Buffer, e Extent) {
 	mwriteInt64(buf, e.Generation)
 	mwriteStr(buf, e.ParityGroupID)
 	mwriteStr(buf, string(e.State))
+	mwriteStr(buf, string(e.CompressionAlg))
+	mwriteInt64(buf, e.CompressedSize)
 }
 
 func mreadExtent(r *bytes.Reader) (Extent, error) {
@@ -530,6 +558,14 @@ func mreadExtent(r *bytes.Reader) (Extent, error) {
 		return e, err
 	}
 	e.State = ExtentState(stateStr)
+	compAlgStr, err := mreadStr(r)
+	if err != nil {
+		return e, err
+	}
+	e.CompressionAlg = CompressionAlgorithm(compAlgStr)
+	if e.CompressedSize, err = mreadInt64(r); err != nil {
+		return e, err
+	}
 	return e, nil
 }
 
@@ -771,66 +807,150 @@ func validateBinaryCount(field string, n int) error {
 }
 
 func validateStateEncodingLimits(state SampleState) error {
-	if err := validateBinaryString("pool.pool_id", state.Pool.PoolID); err != nil { return err }
-	if err := validateBinaryString("pool.name", state.Pool.Name); err != nil { return err }
-	if err := validateBinaryString("pool.version", state.Pool.Version); err != nil { return err }
-	if err := validateBinaryString("pool.parity_mode", state.Pool.ParityMode); err != nil { return err }
-	if err := validateBinaryCount("disks", len(state.Disks)); err != nil { return err }
-	if err := validateBinaryCount("files", len(state.Files)); err != nil { return err }
-	if err := validateBinaryCount("extents", len(state.Extents)); err != nil { return err }
-	if err := validateBinaryCount("parity_groups", len(state.ParityGroups)); err != nil { return err }
-	if err := validateBinaryCount("transactions", len(state.Transactions)); err != nil { return err }
-	if err := validateBinaryCount("scrub_history", len(state.ScrubHistory)); err != nil { return err }
+	if err := validateBinaryString("pool.pool_id", state.Pool.PoolID); err != nil {
+		return err
+	}
+	if err := validateBinaryString("pool.name", state.Pool.Name); err != nil {
+		return err
+	}
+	if err := validateBinaryString("pool.version", state.Pool.Version); err != nil {
+		return err
+	}
+	if err := validateBinaryString("pool.parity_mode", state.Pool.ParityMode); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("disks", len(state.Disks)); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("files", len(state.Files)); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("extents", len(state.Extents)); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("parity_groups", len(state.ParityGroups)); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("transactions", len(state.Transactions)); err != nil {
+		return err
+	}
+	if err := validateBinaryCount("scrub_history", len(state.ScrubHistory)); err != nil {
+		return err
+	}
 	for i, d := range state.Disks {
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].disk_id", i), d.DiskID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].uuid", i), d.UUID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].filesystem_type", i), d.FilesystemType); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].mountpoint", i), d.Mountpoint); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].health_status", i), d.HealthStatus); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("disks[%d].role", i), string(d.Role)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].disk_id", i), d.DiskID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].uuid", i), d.UUID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].filesystem_type", i), d.FilesystemType); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].mountpoint", i), d.Mountpoint); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].health_status", i), d.HealthStatus); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("disks[%d].role", i), string(d.Role)); err != nil {
+			return err
+		}
 	}
 	for i, f := range state.Files {
-		if err := validateBinaryString(fmt.Sprintf("files[%d].file_id", i), f.FileID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("files[%d].path", i), f.Path); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("files[%d].policy", i), f.Policy); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("files[%d].state", i), string(f.State)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("files[%d].file_id", i), f.FileID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("files[%d].path", i), f.Path); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("files[%d].policy", i), f.Policy); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("files[%d].state", i), string(f.State)); err != nil {
+			return err
+		}
 	}
 	for i, e := range state.Extents {
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].extent_id", i), e.ExtentID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].file_id", i), e.FileID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].data_disk_id", i), e.DataDiskID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].relative_path", i), e.PhysicalLocator.RelativePath); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].checksum", i), e.Checksum); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].checksum_alg", i), e.ChecksumAlg); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].parity_group_id", i), e.ParityGroupID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("extents[%d].state", i), string(e.State)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].extent_id", i), e.ExtentID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].file_id", i), e.FileID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].data_disk_id", i), e.DataDiskID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].relative_path", i), e.PhysicalLocator.RelativePath); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].checksum", i), e.Checksum); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].checksum_alg", i), e.ChecksumAlg); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].parity_group_id", i), e.ParityGroupID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("extents[%d].state", i), string(e.State)); err != nil {
+			return err
+		}
 	}
 	for i, pg := range state.ParityGroups {
-		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_group_id", i), pg.ParityGroupID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_disk_id", i), pg.ParityDiskID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_checksum", i), pg.ParityChecksum); err != nil { return err }
-		if err := validateBinaryCount(fmt.Sprintf("parity_groups[%d].member_extent_ids", i), len(pg.MemberExtentIDs)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_group_id", i), pg.ParityGroupID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_disk_id", i), pg.ParityDiskID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].parity_checksum", i), pg.ParityChecksum); err != nil {
+			return err
+		}
+		if err := validateBinaryCount(fmt.Sprintf("parity_groups[%d].member_extent_ids", i), len(pg.MemberExtentIDs)); err != nil {
+			return err
+		}
 		for j, id := range pg.MemberExtentIDs {
-			if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].member_extent_ids[%d]", i, j), id); err != nil { return err }
+			if err := validateBinaryString(fmt.Sprintf("parity_groups[%d].member_extent_ids[%d]", i, j), id); err != nil {
+				return err
+			}
 		}
 	}
 	for i, tx := range state.Transactions {
-		if err := validateBinaryString(fmt.Sprintf("transactions[%d].tx_id", i), tx.TxID); err != nil { return err }
-		if err := validateBinaryString(fmt.Sprintf("transactions[%d].state", i), tx.State); err != nil { return err }
-		if err := validateBinaryCount(fmt.Sprintf("transactions[%d].affected_extent_ids", i), len(tx.AffectedExtentIDs)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("transactions[%d].tx_id", i), tx.TxID); err != nil {
+			return err
+		}
+		if err := validateBinaryString(fmt.Sprintf("transactions[%d].state", i), tx.State); err != nil {
+			return err
+		}
+		if err := validateBinaryCount(fmt.Sprintf("transactions[%d].affected_extent_ids", i), len(tx.AffectedExtentIDs)); err != nil {
+			return err
+		}
 		for j, id := range tx.AffectedExtentIDs {
-			if err := validateBinaryString(fmt.Sprintf("transactions[%d].affected_extent_ids[%d]", i, j), id); err != nil { return err }
+			if err := validateBinaryString(fmt.Sprintf("transactions[%d].affected_extent_ids[%d]", i, j), id); err != nil {
+				return err
+			}
 		}
 	}
 	for i, sr := range state.ScrubHistory {
-		if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].run_id", i), sr.RunID); err != nil { return err }
-		if err := validateBinaryCount(fmt.Sprintf("scrub_history[%d].healed_extent_ids", i), len(sr.HealedExtentIDs)); err != nil { return err }
-		if err := validateBinaryCount(fmt.Sprintf("scrub_history[%d].healed_parity_group_ids", i), len(sr.HealedParityGroupIDs)); err != nil { return err }
+		if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].run_id", i), sr.RunID); err != nil {
+			return err
+		}
+		if err := validateBinaryCount(fmt.Sprintf("scrub_history[%d].healed_extent_ids", i), len(sr.HealedExtentIDs)); err != nil {
+			return err
+		}
+		if err := validateBinaryCount(fmt.Sprintf("scrub_history[%d].healed_parity_group_ids", i), len(sr.HealedParityGroupIDs)); err != nil {
+			return err
+		}
 		for j, id := range sr.HealedExtentIDs {
-			if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].healed_extent_ids[%d]", i, j), id); err != nil { return err }
+			if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].healed_extent_ids[%d]", i, j), id); err != nil {
+				return err
+			}
 		}
 		for j, id := range sr.HealedParityGroupIDs {
-			if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].healed_parity_group_ids[%d]", i, j), id); err != nil { return err }
+			if err := validateBinaryString(fmt.Sprintf("scrub_history[%d].healed_parity_group_ids[%d]", i, j), id); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -847,6 +967,16 @@ func mwriteStr(buf *bytes.Buffer, s string) {
 func mwriteUint16(buf *bytes.Buffer, v uint16) {
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], v)
+	buf.Write(b[:])
+}
+
+func mwriteUint8(buf *bytes.Buffer, v uint8) {
+	buf.WriteByte(v)
+}
+
+func mwriteUint32(buf *bytes.Buffer, v uint32) {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
 	buf.Write(b[:])
 }
 
@@ -880,6 +1010,19 @@ func mreadUint16(r *bytes.Reader) (uint16, error) {
 		return 0, err
 	}
 	return binary.BigEndian.Uint16(b[:]), nil
+}
+
+func mreadUint8(r *bytes.Reader) (uint8, error) {
+	b, err := r.ReadByte()
+	return b, err
+}
+
+func mreadUint32(r *bytes.Reader) (uint32, error) {
+	var b [4]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint32(b[:]), nil
 }
 
 func mreadInt32(r *bytes.Reader) (int32, error) {

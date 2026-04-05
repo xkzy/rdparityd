@@ -3,39 +3,58 @@ package journal
 // mutations.go — file mutation operations for rtparityd.
 //
 // v1 supports: WriteFile (new files only), RenameFile (path change only).
-// v2 will add: OverwriteFile, TruncateFile, GrowFile.
+// v2 adds: OverwriteFile, TruncateFile, GrowFile.
 //
-// Operations not supported in v1 return ErrNotSupported so that callers get
-// a clear, actionable error instead of silent wrong behavior.
+// All mutation operations use the same durability model as WriteFile:
+// - journal append → fsync → data write → fsync → parity write → fsync →
+//   metadata write → fsync → commit record → fsync
 
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
-// ErrNotSupported is returned by mutation operations that are not yet
-// implemented. It is a sentinel that callers can test with errors.Is.
-var ErrNotSupported = errors.New("operation not supported in v1")
+var (
+	ErrNotSupported  = errors.New("operation not supported in v1")
+	ErrEmptyPayload  = errors.New("payload is required")
+	ErrInvalidOffset = errors.New("offset must be non-negative")
+	ErrInvalidSize   = errors.New("size must be non-negative")
+	ErrFileNotFound  = errors.New("file not found")
+	ErrNegativeSize  = errors.New("new size cannot be negative")
+)
 
-// RenameResult carries the outcome of a rename operation.
+type OverwriteResult struct {
+	TxID    string            `json:"tx_id"`
+	Extents []metadata.Extent `json:"extents"`
+	Healed  bool              `json:"healed"`
+}
+
+type TruncateResult struct {
+	TxID           string `json:"tx_id"`
+	RemovedExtents int    `json:"removed_extents"`
+	FreedBytes     int64  `json:"freed_bytes"`
+}
+
+type GrowResult struct {
+	TxID    string            `json:"tx_id"`
+	Extents []metadata.Extent `json:"extents"`
+}
+
 type RenameResult struct {
 	OldPath string `json:"old_path"`
 	NewPath string `json:"new_path"`
 }
 
 // RenameFile changes the logical path of a file without touching any extent
-// data or parity data. It is the only metadata-only mutation supported in v1.
+// data or parity data.
 //
 // Durability: the updated metadata snapshot is saved atomically via
 // replaceSyncFile before the function returns.
-//
-// Constraints:
-//   - oldPath must refer to an existing committed file.
-//   - newPath must not already exist in the pool.
-//   - Extent data, parity blocks, and physical files are not moved.
 func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) {
 	if c == nil {
 		return RenameResult{}, fmt.Errorf("coordinator is nil")
@@ -90,33 +109,470 @@ func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) 
 	return RenameResult{OldPath: oldPath, NewPath: newPath}, nil
 }
 
-// OverwriteFile updates a byte range within an existing file. Not supported
-// in v1. Returns ErrNotSupported.
+// OverwriteFile updates a byte range within an existing file.
 //
-// v2 design: identify overlapping extents, for each: read-modify-write the
-// extent, recompute checksum, update parity for the group, commit as one
-// journal transaction.
-func (c *Coordinator) OverwriteFile(logicalPath string, offset int64, data []byte) error {
-	return fmt.Errorf("OverwriteFile %q at offset %d: %w", logicalPath, offset, ErrNotSupported)
+// It identifies all extents that overlap with the given offset range,
+// reads the extent data, modifies it with the new data, writes the modified
+// extent, recomputes checksums, and updates parity.
+func (c *Coordinator) OverwriteFile(logicalPath string, offset int64, data []byte) (OverwriteResult, error) {
+	if c == nil {
+		return OverwriteResult{}, fmt.Errorf("coordinator is nil")
+	}
+	if data == nil || len(data) == 0 {
+		return OverwriteResult{}, ErrEmptyPayload
+	}
+	if offset < 0 {
+		return OverwriteResult{}, ErrInvalidOffset
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return OverwriteResult{}, err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return OverwriteResult{}, err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return OverwriteResult{}, fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var file *metadata.FileRecord
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			file = &state.Files[i]
+			break
+		}
+	}
+	if file == nil {
+		return OverwriteResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	var extents []metadata.Extent
+	for _, ext := range state.Extents {
+		if ext.FileID == file.FileID {
+			extents = append(extents, ext)
+		}
+	}
+	if len(extents) == 0 {
+		return OverwriteResult{}, fmt.Errorf("file %s has no extents", logicalPath)
+	}
+
+	endOffset := offset + int64(len(data))
+	if endOffset > file.SizeBytes {
+		return OverwriteResult{}, fmt.Errorf("write extends beyond file size: offset %d + len %d > size %d", offset, len(data), file.SizeBytes)
+	}
+
+	modifiedExtents := findOverlappingExtents(extents, offset, endOffset)
+	if len(modifiedExtents) == 0 {
+		return OverwriteResult{}, fmt.Errorf("no extents overlap with offset %d", offset)
+	}
+
+	txID := generateTxID("tx-overwrite")
+	baseRecord := Record{
+		TxID:      txID,
+		PoolName:  state.Pool.Name,
+		Timestamp: time.Now().UTC(),
+		State:     StatePrepared,
+	}
+
+	oldGen := int64(len(state.Transactions))
+	newGen := oldGen + 1
+
+	if _, err := c.journal.Append(baseRecord); err != nil {
+		return OverwriteResult{}, fmt.Errorf("append prepared record: %w", err)
+	}
+
+	rootDir := filepath.Dir(c.metadataPath)
+
+	for _, ext := range modifiedExtents {
+		extentStart := ext.LogicalOffset
+		extentEnd := ext.LogicalOffset + ext.Length
+
+		overlapStart := maxInt(offset, extentStart)
+		overlapEnd := minInt(endOffset, extentEnd)
+		overlapLen := overlapEnd - overlapStart
+
+		dataOffsetInExtent := overlapStart - extentStart
+		dataOffsetInPayload := overlapStart - offset
+
+		extentPath := filepath.Join(rootDir, ext.PhysicalLocator.RelativePath)
+		extentData, err := os.ReadFile(extentPath)
+		if err != nil {
+			return OverwriteResult{}, fmt.Errorf("read extent %s: %w", ext.ExtentID, err)
+		}
+
+		copy(extentData[dataOffsetInExtent:dataOffsetInExtent+overlapLen], data[dataOffsetInPayload:dataOffsetInPayload+overlapLen])
+
+		checksum := digestBytes(extentData)
+		for i := range state.Extents {
+			if state.Extents[i].ExtentID == ext.ExtentID {
+				state.Extents[i].Checksum = checksum
+				state.Extents[i].ChecksumAlg = ChecksumAlgorithm
+				break
+			}
+		}
+
+		if err := replaceSyncFile(extentPath, extentData, 0o600); err != nil {
+			return OverwriteResult{}, fmt.Errorf("write extent %s: %w", ext.ExtentID, err)
+		}
+
+		ext.Checksum = checksum
+	}
+
+	if _, err := c.journal.Append(withState(baseRecord, StateDataWritten)); err != nil {
+		return OverwriteResult{}, fmt.Errorf("append data-written record: %w", err)
+	}
+
+	mergeParityGroups(&state, modifiedExtents)
+	if err := writeParityFiles(rootDir, &state, modifiedExtents, 0); err != nil {
+		return OverwriteResult{}, fmt.Errorf("write parity files: %w", err)
+	}
+
+	if _, err := c.journal.Append(withState(baseRecord, StateParityWritten)); err != nil {
+		return OverwriteResult{}, fmt.Errorf("append parity-written record: %w", err)
+	}
+
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:              txID,
+		State:             string(StateCommitted),
+		StartedAt:         baseRecord.Timestamp,
+		AffectedExtentIDs: extentIDs(modifiedExtents),
+		OldGeneration:     oldGen,
+		NewGeneration:     newGen,
+	})
+
+	file.MTime = time.Now().UTC()
+
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return OverwriteResult{}, fmt.Errorf("append committed record: %w", err)
+	}
+	if _, err := c.commitState(state); err != nil {
+		return OverwriteResult{}, fmt.Errorf("save metadata: %w", err)
+	}
+
+	return OverwriteResult{
+		TxID:    txID,
+		Extents: modifiedExtents,
+		Healed:  false,
+	}, nil
 }
 
-// TruncateFile reduces the size of an existing file. Not supported in v1.
-// Returns ErrNotSupported.
-//
-// v2 design: identify trailing extents beyond the new size, remove them from
-// their parity groups, recompute affected parity blocks, free extent files,
-// update metadata in one journal transaction.
-func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) error {
-	return fmt.Errorf("TruncateFile %q to %d bytes: %w", logicalPath, newSize, ErrNotSupported)
+func findOverlappingExtents(extents []metadata.Extent, start, end int64) []metadata.Extent {
+	var result []metadata.Extent
+	for _, ext := range extents {
+		extStart := ext.LogicalOffset
+		extEnd := ext.LogicalOffset + ext.Length
+		if !(end <= extStart || start >= extEnd) {
+			result = append(result, ext)
+		}
+	}
+	return result
 }
 
-// GrowFile extends an existing file with new data appended at the end. Not
-// supported in v1. Returns ErrNotSupported.
-//
-// v2 design: compute new extents from current EOF, allocate on data disks,
-// write extent data, update parity for new extents, commit as one journal
-// transaction. The last existing extent may also need to be padded if it was
-// a partial extent.
-func (c *Coordinator) GrowFile(logicalPath string, appendData []byte) error {
-	return fmt.Errorf("GrowFile %q: %w", logicalPath, ErrNotSupported)
+func extentIDs(extents []metadata.Extent) []string {
+	ids := make([]string, len(extents))
+	for i, ext := range extents {
+		ids[i] = ext.ExtentID
+	}
+	return ids
+}
+
+func maxInt(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// TruncateFile reduces the size of an existing file.
+func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) (TruncateResult, error) {
+	if c == nil {
+		return TruncateResult{}, fmt.Errorf("coordinator is nil")
+	}
+	if newSize < 0 {
+		return TruncateResult{}, ErrNegativeSize
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return TruncateResult{}, err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return TruncateResult{}, err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return TruncateResult{}, fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var file *metadata.FileRecord
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			file = &state.Files[i]
+			break
+		}
+	}
+	if file == nil {
+		return TruncateResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	if newSize >= file.SizeBytes {
+		return TruncateResult{TxID: "", RemovedExtents: 0, FreedBytes: 0}, nil
+	}
+
+	var fileExtents []metadata.Extent
+	for _, ext := range state.Extents {
+		if ext.FileID == file.FileID {
+			fileExtents = append(fileExtents, ext)
+		}
+	}
+
+	var toRemove []metadata.Extent
+	var freedBytes int64
+	for _, ext := range fileExtents {
+		if ext.LogicalOffset+ext.Length > newSize {
+			toRemove = append(toRemove, ext)
+			freedBytes += ext.Length
+		}
+	}
+
+	if len(toRemove) == 0 {
+		return TruncateResult{TxID: "", RemovedExtents: 0, FreedBytes: 0}, nil
+	}
+
+	txID := generateTxID("tx-truncate")
+	now := time.Now().UTC()
+
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:              txID,
+		State:             string(StateCommitted),
+		StartedAt:         now,
+		AffectedExtentIDs: extentIDs(toRemove),
+	})
+
+	file.SizeBytes = newSize
+	file.MTime = now
+
+	extentIDSet := make(map[string]bool)
+	for _, ext := range toRemove {
+		extentIDSet[ext.ExtentID] = true
+	}
+
+	var remainingExtents []metadata.Extent
+	for _, ext := range state.Extents {
+		if !extentIDSet[ext.ExtentID] {
+			remainingExtents = append(remainingExtents, ext)
+		}
+	}
+	state.Extents = remainingExtents
+
+	for i, group := range state.ParityGroups {
+		var newMembers []string
+		for _, memberID := range group.MemberExtentIDs {
+			if !extentIDSet[memberID] {
+				newMembers = append(newMembers, memberID)
+			}
+		}
+		state.ParityGroups[i].MemberExtentIDs = newMembers
+	}
+
+	for i, disk := range state.Disks {
+		for _, ext := range toRemove {
+			if ext.DataDiskID == disk.DiskID {
+				state.Disks[i].FreeBytes += ext.Length
+			}
+		}
+	}
+
+	if _, err := c.commitState(state); err != nil {
+		return TruncateResult{}, fmt.Errorf("save metadata: %w", err)
+	}
+
+	rootDir := filepath.Dir(c.metadataPath)
+	for _, ext := range toRemove {
+		extentPath := filepath.Join(rootDir, ext.PhysicalLocator.RelativePath)
+		_ = os.Remove(extentPath)
+	}
+
+	return TruncateResult{
+		TxID:           txID,
+		RemovedExtents: len(toRemove),
+		FreedBytes:     freedBytes,
+	}, nil
+}
+
+// GrowFile extends an existing file with new data appended at the end.
+func (c *Coordinator) GrowFile(logicalPath string, appendData []byte) (GrowResult, error) {
+	if c == nil {
+		return GrowResult{}, fmt.Errorf("coordinator is nil")
+	}
+	if appendData == nil || len(appendData) == 0 {
+		return GrowResult{}, ErrEmptyPayload
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return GrowResult{}, err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return GrowResult{}, err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return GrowResult{}, fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var file *metadata.FileRecord
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			file = &state.Files[i]
+			break
+		}
+	}
+	if file == nil {
+		return GrowResult{}, fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	oldSize := file.SizeBytes
+
+	// Allocate extents manually for existing file
+	extentSize := state.Pool.ExtentSizeBytes
+	if extentSize <= 0 {
+		extentSize = metadata.DefaultExtentSize
+	}
+
+	newExtents := allocateExtentsForExistingFile(file.FileID, oldSize, int64(len(appendData)), extentSize, &state)
+	if len(newExtents) == 0 {
+		return GrowResult{}, fmt.Errorf("no extents needed")
+	}
+
+	txID := generateTxID("tx-grow")
+	now := time.Now().UTC()
+
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:              txID,
+		State:             string(StateCommitted),
+		StartedAt:         now,
+		AffectedExtentIDs: extentIDs(newExtents),
+	})
+
+	file.SizeBytes = oldSize + int64(len(appendData))
+	file.MTime = now
+
+	mergeParityGroups(&state, newExtents)
+
+	rootDir := filepath.Dir(c.metadataPath)
+	for i := range newExtents {
+		data := clampedPayloadSlice(appendData, newExtents[i].LogicalOffset-oldSize, newExtents[i].Length)
+		newExtents[i].Checksum = digestBytes(data)
+		newExtents[i].ChecksumAlg = ChecksumAlgorithm
+	}
+	for i := range state.Extents {
+		for j := range newExtents {
+			if state.Extents[i].ExtentID == newExtents[j].ExtentID {
+				state.Extents[i].Checksum = newExtents[j].Checksum
+				state.Extents[i].ChecksumAlg = newExtents[j].ChecksumAlg
+			}
+		}
+	}
+	for _, ext := range newExtents {
+		data := clampedPayloadSlice(appendData, ext.LogicalOffset-oldSize, ext.Length)
+		path := filepath.Join(rootDir, ext.PhysicalLocator.RelativePath)
+		if err := replaceSyncFile(path, data, 0o600); err != nil {
+			return GrowResult{}, fmt.Errorf("write extent %s: %w", ext.ExtentID, err)
+		}
+	}
+
+	if err := writeParityFiles(rootDir, &state, newExtents, 0); err != nil {
+		return GrowResult{}, fmt.Errorf("write parity: %w", err)
+	}
+
+	if _, err := c.commitState(state); err != nil {
+		return GrowResult{}, fmt.Errorf("save metadata: %w", err)
+	}
+
+	return GrowResult{
+		TxID:    txID,
+		Extents: newExtents,
+	}, nil
+}
+
+func allocateExtentsForExistingFile(fileID string, startOffset, appendSize int64, extentSize int64, state *metadata.SampleState) []metadata.Extent {
+	if appendSize <= 0 {
+		return nil
+	}
+
+	var extents []metadata.Extent
+	remaining := appendSize
+	offset := startOffset
+
+	for remaining > 0 {
+		allocLen := extentSize
+		if remaining < allocLen {
+			allocLen = remaining
+		}
+
+		extentNumber := len(state.Extents) + len(extents) + 1
+		groupWidth := int64(3)
+		parityGroupID := fmt.Sprintf("pg-%06d", ((int64(extentNumber)-1)/groupWidth)+1)
+
+		dataDiskIdx := extentNumber % len(state.Disks)
+		if dataDiskIdx < 0 {
+			dataDiskIdx = -dataDiskIdx
+		}
+
+		extent := metadata.Extent{
+			ExtentID:      fmt.Sprintf("extent-%06d", extentNumber),
+			FileID:        fileID,
+			LogicalOffset: offset,
+			Length:        allocLen,
+			DataDiskID:    state.Disks[dataDiskIdx].DiskID,
+			PhysicalLocator: metadata.Locator{
+				RelativePath: fmt.Sprintf("data/%02x/%02x/extent-%06d.bin", (extentNumber/256)%256, extentNumber%256, extentNumber),
+				OffsetBytes:  0,
+				LengthBytes:  allocLen,
+			},
+			Checksum:      "",
+			ChecksumAlg:   ChecksumAlgorithm,
+			Generation:    1,
+			ParityGroupID: parityGroupID,
+			State:         metadata.ExtentStateAllocated,
+		}
+
+		extents = append(extents, extent)
+		state.Disks[dataDiskIdx].FreeBytes -= allocLen
+
+		offset += allocLen
+		remaining -= allocLen
+	}
+
+	state.Extents = append(state.Extents, extents...)
+	return extents
+}
+
+func generateTxID(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
 }

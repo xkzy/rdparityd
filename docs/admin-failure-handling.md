@@ -15,7 +15,7 @@ This guide covers how to handle common failure scenarios in rtparityd.
 
 1. **Check disk status:**
    ```bash
-   rtpctl check-invariants -metadata-path /tmp/rtparityd/metadata.json -full
+   rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -full
    ```
 
 2. **Replace disk:**
@@ -29,7 +29,7 @@ This guide covers how to handle common failure scenarios in rtparityd.
 
 3. **Rebuild data from parity:**
    ```bash
-   rtpctl rebuild-demo -disk disk-01 -metadata-path /tmp/rtparityd/metadata.json
+   rtpctl rebuild-demo -disk disk-01 -metadata-path /tmp/rtparityd-metadata.bin
    ```
 
 ## Metadata Corruption
@@ -43,7 +43,7 @@ This guide covers how to handle common failure scenarios in rtparityd.
 1. **Try recovery:**
    ```bash
    # Recovery will attempt to rebuild from journal
-   go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd/metadata.json -journal-path /tmp/rtparityd/journal.log
+   go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd/metadata.bin -journal-path /tmp/rtparityd/journal.log
    ```
 
 2. **If journal is empty and metadata corrupt:**
@@ -88,7 +88,7 @@ This guide covers how to handle common failure scenarios in rtparityd.
 
 1. **Run scrub with repair:**
    ```bash
-   rtpctl scrub-demo -metadata-path /tmp/rtparityd/metadata.json -repair=true
+   rtpctl scrub-demo -metadata-path /tmp/rtparityd/metadata.bin -repair=true
    ```
 
 2. **If unrecoverable:**
@@ -109,7 +109,7 @@ This guide covers how to handle common failure scenarios in rtparityd.
 
 2. **Manual scrub repair:**
    ```bash
-   rtpctl scrub-demo -metadata-path /tmp/rtparityd/metadata.json -repair=true
+   rtpctl scrub-demo -metadata-path /tmp/rtparityd/metadata.bin -repair=true
    ```
 
 ## Power Loss Recovery
@@ -137,13 +137,13 @@ This guide covers how to handle common failure scenarios in rtparityd.
 
 ```bash
 # Check invariants
-rtpctl check-invariants -metadata-path /tmp/rtparityd/metadata.json -journal-path /tmp/rtparityd/journal.log -full
+rtpctl check-invariants -metadata-path /tmp/rtparityd/metadata.bin -journal-path /tmp/rtparityd/journal.log -full
 
 # Scrub history
-rtpctl scrub-history -metadata-path /tmp/rtparityd/metadata.json
+rtpctl scrub-history -metadata-path /tmp/rtparityd/metadata.bin
 
 # Sleep status
-rtpctl sleep-status -metadata-path /tmp/rtparityd/metadata.json
+rtpctl sleep-status -metadata-path /tmp/rtparityd/metadata.bin
 ```
 
 ### What to watch for

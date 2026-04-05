@@ -13,6 +13,7 @@ func TestRenameFileSucceeds(t *testing.T) {
 	_, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/a/file.txt",
+		AllowSynthetic: true,
 		SizeBytes:   1024,
 	})
 	if err != nil {
@@ -55,6 +56,7 @@ func TestRenameFileSamePathIsNoOp(t *testing.T) {
 	_, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/same.txt",
+		AllowSynthetic: true,
 		SizeBytes:   512,
 	})
 	if err != nil {
@@ -77,6 +79,7 @@ func TestRenameFileNotFound(t *testing.T) {
 	_, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/exists.txt",
+		AllowSynthetic: true,
 		SizeBytes:   512,
 	})
 	if err != nil {
@@ -94,7 +97,7 @@ func TestRenameFileDestinationExists(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	for _, path := range []string{"/src.txt", "/dst.txt"} {
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, SizeBytes: 512}); err != nil {
+		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
 			t.Fatalf("WriteFile(%q) returned error: %v", path, err)
 		}
 	}

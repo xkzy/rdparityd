@@ -19,6 +19,7 @@ func TestValidateOnDiskFormatsHealthyPool(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -51,6 +52,7 @@ func TestValidateOnDiskFormatsTamperedMetadata(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
+		AllowSynthetic: true,
 		SizeBytes:   1024,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -84,6 +86,7 @@ func TestValidateOnDiskFormatsMissingExtentFile(t *testing.T) {
 	writeResult, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -113,6 +116,7 @@ func TestValidateOnDiskFormatsMissingJournal(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
+		AllowSynthetic: true,
 		SizeBytes:   512,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -139,6 +143,7 @@ func TestValidateOnDiskFormatsCorruptedExtentChecksum(t *testing.T) {
 	writeResult, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/corrupt.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	})
 	if err != nil {
@@ -176,6 +181,7 @@ func TestValidateRebuildProgressFileValidFormat(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/rebuild/test.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -213,6 +219,7 @@ func TestValidateOnDiskFormatsParityChecksum(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/parity.bin",
+		AllowSynthetic: true,
 		Payload:     payload,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -309,6 +316,7 @@ func TestValidateRebuildProgressFileInViaValidateOnDisk(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/f.bin",
+		AllowSynthetic: true,
 		SizeBytes:   512,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)

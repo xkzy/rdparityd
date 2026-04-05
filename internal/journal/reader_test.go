@@ -24,6 +24,7 @@ func TestPoolNameReturnsPoolNameAfterWrite(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "mypool",
 		LogicalPath: "/file.txt",
+		AllowSynthetic: true,
 		Payload:     payload,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -67,6 +68,7 @@ func TestReadMetaReturnsCachedStateAfterWrite(t *testing.T) {
 	if _, err := coord.WriteFile(WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/file.txt",
+		AllowSynthetic: true,
 		SizeBytes:   512,
 	}); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)

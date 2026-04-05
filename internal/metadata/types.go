@@ -14,12 +14,16 @@ const ChecksumAlgorithm = "blake3"
 const DefaultExtentSize = int64(1 << 20) // 1 MiB
 
 type Pool struct {
-	PoolID          string    `json:"pool_id"`
-	Name            string    `json:"name"`
-	Version         string    `json:"version"`
-	ExtentSizeBytes int64     `json:"extent_size_bytes"`
-	ParityMode      string    `json:"parity_mode"`
-	CreatedAt       time.Time `json:"created_at"`
+	PoolID            string    `json:"pool_id"`
+	Name              string    `json:"name"`
+	Version           string    `json:"version"`
+	ExtentSizeBytes   int64     `json:"extent_size_bytes"`
+	ParityMode        string    `json:"parity_mode"`
+	FilesystemType    string    `json:"filesystem_type"`
+	SleepEnabled      bool      `json:"sleep_enabled"`
+	SleepTimeoutSec   int       `json:"sleep_timeout_sec"`
+	SleepMinActiveSec int       `json:"sleep_min_active_sec"`
+	CreatedAt         time.Time `json:"created_at"`
 }
 
 type DiskRole string
@@ -70,18 +74,31 @@ const (
 	ExtentStateAllocated ExtentState = "allocated"
 )
 
+type CompressionAlgorithm string
+
+const (
+	CompressionNone   CompressionAlgorithm = ""
+	CompressionZstd   CompressionAlgorithm = "zstd"
+	CompressionLZ4    CompressionAlgorithm = "lz4"
+	CompressionSnappy CompressionAlgorithm = "snappy"
+	CompressionGZip   CompressionAlgorithm = "gzip"
+	CompressionXZ     CompressionAlgorithm = "xz"
+)
+
 type Extent struct {
-	ExtentID        string      `json:"extent_id"`
-	FileID          string      `json:"file_id"`
-	LogicalOffset   int64       `json:"logical_offset"`
-	Length          int64       `json:"length"`
-	DataDiskID      string      `json:"data_disk_id"`
-	PhysicalLocator Locator     `json:"physical_locator"`
-	Checksum        string      `json:"checksum"`
-	ChecksumAlg     string      `json:"checksum_alg"`
-	Generation      int64       `json:"generation"`
-	ParityGroupID   string      `json:"parity_group_id"`
-	State           ExtentState `json:"state"`
+	ExtentID        string               `json:"extent_id"`
+	FileID          string               `json:"file_id"`
+	LogicalOffset   int64                `json:"logical_offset"`
+	Length          int64                `json:"length"`
+	DataDiskID      string               `json:"data_disk_id"`
+	PhysicalLocator Locator              `json:"physical_locator"`
+	Checksum        string               `json:"checksum"`
+	ChecksumAlg     string               `json:"checksum_alg"`
+	Generation      int64                `json:"generation"`
+	ParityGroupID   string               `json:"parity_group_id"`
+	State           ExtentState          `json:"state"`
+	CompressionAlg  CompressionAlgorithm `json:"compression_alg,omitempty"`
+	CompressedSize  int64                `json:"compressed_size,omitempty"`
 }
 
 type ParityGroup struct {
@@ -139,6 +156,7 @@ func PrototypeState(name string) SampleState {
 			Version:         "v1alpha1",
 			ExtentSizeBytes: DefaultExtentSize,
 			ParityMode:      "single",
+			FilesystemType:  "btrfs",
 			CreatedAt:       now,
 		},
 		Disks: []Disk{

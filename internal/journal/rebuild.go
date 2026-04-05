@@ -101,7 +101,13 @@ func saveRebuildProgress(metadataPath string, progress RebuildProgress) error {
 	// the uint64 representation round-trips correctly via int64(binary.BigEndian.Uint64(...)).
 	ns := progress.LastUpdated.UnixNano()
 	if ns < 0 {
-		ns = 0 // clamp pre-epoch timestamps to epoch; progress timestamps are informational only
+		// Pre-epoch timestamps should never occur in production because
+		// LastUpdated is always set to time.Now().UTC() in rebuildDiskFromState.
+		// A negative value would indicate a corrupted in-memory struct or a
+		// system clock set before 1970 (e.g. RTC battery failure). Clamping
+		// to zero is safe because the rebuild progress timestamp is used only
+		// for diagnostic/audit purposes and does not affect correctness.
+		ns = 0
 	}
 	binary.BigEndian.PutUint64(hdr[8:16], uint64(ns))
 	hash := blake3.Sum256(payload)

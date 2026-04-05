@@ -673,30 +673,66 @@ func validateRecordEncodingLimits(record Record) error {
 		}
 		return nil
 	}
-	if err := checkStr("tx_id", record.TxID); err != nil { return err }
-	if err := checkStr("pool_name", record.PoolName); err != nil { return err }
-	if err := checkStr("logical_path", record.LogicalPath); err != nil { return err }
-	if err := checkCount("affected_extent_ids", len(record.AffectedExtentIDs)); err != nil { return err }
+	if err := checkStr("tx_id", record.TxID); err != nil {
+		return err
+	}
+	if err := checkStr("pool_name", record.PoolName); err != nil {
+		return err
+	}
+	if err := checkStr("logical_path", record.LogicalPath); err != nil {
+		return err
+	}
+	if err := checkCount("affected_extent_ids", len(record.AffectedExtentIDs)); err != nil {
+		return err
+	}
 	for i, id := range record.AffectedExtentIDs {
-		if err := checkStr(fmt.Sprintf("affected_extent_ids[%d]", i), id); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("affected_extent_ids[%d]", i), id); err != nil {
+			return err
+		}
 	}
 	if record.File != nil {
 		f := *record.File
-		if err := checkStr("file.file_id", f.FileID); err != nil { return err }
-		if err := checkStr("file.path", f.Path); err != nil { return err }
-		if err := checkStr("file.policy", f.Policy); err != nil { return err }
-		if err := checkStr("file.state", string(f.State)); err != nil { return err }
+		if err := checkStr("file.file_id", f.FileID); err != nil {
+			return err
+		}
+		if err := checkStr("file.path", f.Path); err != nil {
+			return err
+		}
+		if err := checkStr("file.policy", f.Policy); err != nil {
+			return err
+		}
+		if err := checkStr("file.state", string(f.State)); err != nil {
+			return err
+		}
 	}
-	if err := checkCount("extents", len(record.Extents)); err != nil { return err }
+	if err := checkCount("extents", len(record.Extents)); err != nil {
+		return err
+	}
 	for i, e := range record.Extents {
-		if err := checkStr(fmt.Sprintf("extents[%d].extent_id", i), e.ExtentID); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].file_id", i), e.FileID); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].data_disk_id", i), e.DataDiskID); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].relative_path", i), e.PhysicalLocator.RelativePath); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].checksum", i), e.Checksum); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].checksum_alg", i), e.ChecksumAlg); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].parity_group_id", i), e.ParityGroupID); err != nil { return err }
-		if err := checkStr(fmt.Sprintf("extents[%d].state", i), string(e.State)); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].extent_id", i), e.ExtentID); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].file_id", i), e.FileID); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].data_disk_id", i), e.DataDiskID); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].relative_path", i), e.PhysicalLocator.RelativePath); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].checksum", i), e.Checksum); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].checksum_alg", i), e.ChecksumAlg); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].parity_group_id", i), e.ParityGroupID); err != nil {
+			return err
+		}
+		if err := checkStr(fmt.Sprintf("extents[%d].state", i), string(e.State)); err != nil {
+			return err
+		}
 	}
 	return nil
 }

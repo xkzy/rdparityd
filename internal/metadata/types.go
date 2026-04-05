@@ -13,6 +13,23 @@ const ChecksumAlgorithm = "blake3"
 // rebuild checkpoint granularity.
 const DefaultExtentSize = int64(1 << 20) // 1 MiB
 
+type PoolProtectionState string
+
+const (
+	ProtectionIntegrityOnly PoolProtectionState = "integrity_only"
+	ProtectionMirrored      PoolProtectionState = "mirrored"
+	ProtectionParity        PoolProtectionState = "parity"
+)
+
+func (s Pool) ProtectionLevel() PoolProtectionState {
+	switch {
+	case s.ProtectionState != "":
+		return PoolProtectionState(s.ProtectionState)
+	default:
+		return ProtectionIntegrityOnly
+	}
+}
+
 type Pool struct {
 	PoolID            string    `json:"pool_id"`
 	Name              string    `json:"name"`
@@ -24,6 +41,7 @@ type Pool struct {
 	SleepTimeoutSec   int       `json:"sleep_timeout_sec"`
 	SleepMinActiveSec int       `json:"sleep_min_active_sec"`
 	CreatedAt         time.Time `json:"created_at"`
+	ProtectionState   string    `json:"protection_state,omitempty"`
 }
 
 type DiskRole string
@@ -31,6 +49,7 @@ type DiskRole string
 const (
 	DiskRoleData     DiskRole = "data"
 	DiskRoleParity   DiskRole = "parity"
+	DiskRoleMirror   DiskRole = "mirror"
 	DiskRoleMetadata DiskRole = "metadata"
 )
 
@@ -44,6 +63,7 @@ type Disk struct {
 	FreeBytes      int64    `json:"free_bytes"`
 	HealthStatus   string   `json:"health_status"`
 	Generation     int64    `json:"generation"`
+	MirrorOfDisk   string   `json:"mirror_of_disk,omitempty"`
 }
 
 type FileState string
@@ -85,6 +105,23 @@ const (
 	CompressionXZ     CompressionAlgorithm = "xz"
 )
 
+type ExtentProtectionClass string
+
+const (
+	ExtentChecksumOnly ExtentProtectionClass = "checksum_only"
+	ExtentMirrored     ExtentProtectionClass = "mirrored"
+	ExtentParity       ExtentProtectionClass = "parity"
+)
+
+type ExtentCorruptionStatus string
+
+const (
+	ExtentOK          ExtentCorruptionStatus = "ok"
+	ExtentCorrupt     ExtentCorruptionStatus = "corrupt"
+	ExtentHealing     ExtentCorruptionStatus = "healing"
+	ExtentQuarantined ExtentCorruptionStatus = "quarantined"
+)
+
 type Extent struct {
 	ExtentID        string               `json:"extent_id"`
 	FileID          string               `json:"file_id"`
@@ -99,6 +136,11 @@ type Extent struct {
 	State           ExtentState          `json:"state"`
 	CompressionAlg  CompressionAlgorithm `json:"compression_alg,omitempty"`
 	CompressedSize  int64                `json:"compressed_size,omitempty"`
+
+	ProtectionClass  ExtentProtectionClass  `json:"protection_class,omitempty"`
+	MirrorDiskID     string                 `json:"mirror_disk_id,omitempty"`
+	MirrorChecksum   string                 `json:"mirror_checksum,omitempty"`
+	CorruptionStatus ExtentCorruptionStatus `json:"corruption_status,omitempty"`
 }
 
 type ParityGroup struct {

@@ -115,12 +115,8 @@ func saveRebuildProgress(metadataPath string, progress RebuildProgress) error {
 
 	data := append(hdr, payload...)
 	path := progressPath(metadataPath, progress.DiskID)
-	if err := writeSyncFile(path, data, 0o600); err != nil {
+	if err := replaceSyncFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("save rebuild progress: %w", err)
-	}
-	// Fsync parent directory so the new file is durable.
-	if err := syncDir(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("sync rebuild progress directory: %w", err)
 	}
 	return nil
 }
@@ -183,7 +179,7 @@ func loadRebuildProgress(metadataPath, diskID string) (RebuildProgress, error) {
 
 // deleteRebuildProgress removes the progress file after a successful rebuild.
 func deleteRebuildProgress(metadataPath, diskID string) {
-	_ = os.Remove(progressPath(metadataPath, diskID))
+	_ = removeSync(progressPath(metadataPath, diskID))
 }
 
 // ─── Rebuild types ───────────────────────────────────────────────────────────
@@ -225,6 +221,12 @@ type RebuildAllResult struct {
 // If a progress file from a previous (interrupted) rebuild exists, it resumes
 // from where the last run stopped.
 func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rebuildDataDiskWithRepairFailAfter(diskID, "")
+}
+
+func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfter State) (RebuildResult, error) {
 	result := RebuildResult{
 		StartedAt: time.Now().UTC(),
 		DiskID:    strings.TrimSpace(diskID),
@@ -237,16 +239,18 @@ func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 		return result, fmt.Errorf("disk id is required")
 	}
 
-	state, err := c.metadata.Load()
+	state, err := c.loadState(metadata.SampleState{})
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
-	return rebuildDiskFromState(c.metadataPath, state, result)
+	return rebuildDiskFromState(c.metadataPath, c.journal, state, result, failAfter)
 }
 
 // RebuildAllDataDisks reconstructs extents on all data disks that have any
 // extents registered in metadata.
 func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	result := RebuildAllResult{
 		StartedAt: time.Now().UTC(),
 		Healthy:   true,
@@ -255,7 +259,7 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 		return result, fmt.Errorf("coordinator is nil")
 	}
 
-	state, err := c.metadata.Load()
+	state, err := c.loadState(metadata.SampleState{})
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
@@ -271,11 +275,11 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 	}
 	sort.Strings(disks)
 	for _, diskID := range disks {
-		diskResult, err := rebuildDiskFromState(c.metadataPath, state, RebuildResult{
+		diskResult, err := rebuildDiskFromState(c.metadataPath, c.journal, state, RebuildResult{
 			StartedAt: time.Now().UTC(),
 			DiskID:    diskID,
 			Healthy:   true,
-		})
+		}, "")
 		if err != nil {
 			return result, err
 		}
@@ -296,9 +300,7 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 
 // ─── Internal ────────────────────────────────────────────────────────────────
 
-func rebuildDiskFromState(metadataPath string, state metadata.SampleState, result RebuildResult) (RebuildResult, error) {
-	rootDir := filepath.Dir(metadataPath)
-
+func rebuildDiskFromState(metadataPath string, journal *Store, state metadata.SampleState, result RebuildResult, failAfter State) (RebuildResult, error) {
 	// Collect and sort extents for this disk deterministically.
 	extents := make([]metadata.Extent, 0)
 	for _, extent := range state.Extents {
@@ -341,7 +343,7 @@ func rebuildDiskFromState(metadataPath string, state metadata.SampleState, resul
 			continue
 		}
 
-		_, repaired, err := verifyExtent(rootDir, state, extent, true)
+		_, repaired, err := verifyExtent(metadataPath, journal, state, extent, true, failAfter)
 		if err != nil {
 			result.FailedCount++
 			result.Healthy = false
@@ -385,10 +387,48 @@ func rebuildDiskFromState(metadataPath string, state metadata.SampleState, resul
 
 	result.CompletedAt = time.Now().UTC()
 
-	// Remove the progress file on a fully successful rebuild so the next run
-	// starts fresh.
 	if result.FailedCount == 0 {
 		deleteRebuildProgress(metadataPath, result.DiskID)
+
+		// I8: verify the just-rebuilt disk's extents satisfy E1 (on-disk bytes
+		// match stored checksums). The check is scoped to this disk only:
+		// a pool-wide CheckIntegrityInvariants call would also examine extents
+		// on other disks that may legitimately still be degraded (e.g. during
+		// RebuildAllDataDisks where each disk is rebuilt sequentially).
+		rootDir := filepath.Dir(metadataPath)
+		rebuiltDiskID := result.DiskID
+		for _, extent := range state.Extents {
+			if extent.DataDiskID != rebuiltDiskID || extent.Checksum == "" {
+				continue
+			}
+			path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				v := InvariantViolation{
+					Code: "E1", Kind: "extent", Entity: extent.ExtentID,
+					Message: fmt.Sprintf("cannot read rebuilt extent: %v", err),
+				}
+				result.Healthy = false
+				result.Issues = append(result.Issues, RebuildIssue{
+					ExtentID: extent.ExtentID, Status: "post-rebuild-integrity-failed",
+					Detail: v.Error(),
+				})
+				return result, fmt.Errorf("I8: post-rebuild integrity check failed: %w", v)
+			}
+			normalized := normalizeExtentLength(data, extent.Length)
+			if got := digestBytes(normalized); got != extent.Checksum {
+				v := InvariantViolation{
+					Code: "E1", Kind: "extent", Entity: extent.ExtentID,
+					Message: fmt.Sprintf("post-rebuild checksum mismatch: expected=%s got=%s", extent.Checksum, got),
+				}
+				result.Healthy = false
+				result.Issues = append(result.Issues, RebuildIssue{
+					ExtentID: extent.ExtentID, Status: "post-rebuild-integrity-failed",
+					Detail: v.Error(),
+				})
+				return result, fmt.Errorf("I8: post-rebuild integrity check failed: %w", v)
+			}
+		}
 	}
 	return result, nil
 }

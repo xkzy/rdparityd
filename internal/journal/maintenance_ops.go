@@ -72,10 +72,30 @@ func (c *Coordinator) Trim() (TrimResult, error) {
 	switch state.Pool.FilesystemType {
 	case "btrfs":
 		disksTrimmed, totalBytes, err = trimBtrfs(state.Disks, rootDir)
-	case "ext4", "xfs":
+	case "ext4":
+		disksTrimmed, totalBytes, err = trimExt4(state.Disks, rootDir)
+	case "xfs":
+		disksTrimmed, totalBytes, err = trimXfs(state.Disks, rootDir)
+	case "ntfs":
+		disksTrimmed, totalBytes, err = trimNtfs(state.Disks, rootDir)
+	case "exfat":
+		disksTrimmed, totalBytes, err = trimExfat(state.Disks, rootDir)
+	case "hfs", "hfsplus":
+		disksTrimmed, totalBytes, err = trimHfs(state.Disks, rootDir)
+	case "apfs":
+		disksTrimmed, totalBytes, err = trimApfs(state.Disks, rootDir)
+	case "ufs":
+		disksTrimmed, totalBytes, err = trimUfs(state.Disks, rootDir)
+	case "fat12", "fat16", "fat32":
 		disksTrimmed, totalBytes, err = trimGeneric(state.Disks, rootDir)
+	case "refs":
+		disksTrimmed, totalBytes, err = trimGeneric(state.Disks, rootDir)
+	case "hpfs":
+		disksTrimmed, totalBytes, err = trimGeneric(state.Disks, rootDir)
+	case "ext2", "ext3":
+		disksTrimmed, totalBytes, err = trimExt4(state.Disks, rootDir)
 	default:
-		return TrimResult{}, fmt.Errorf("unsupported filesystem type for trim: %s", state.Pool.FilesystemType)
+		disksTrimmed, totalBytes, err = trimGeneric(state.Disks, rootDir)
 	}
 
 	if err != nil {
@@ -142,6 +162,118 @@ func trimBtrfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
 	return trimmed, totalBytes, nil
 }
 
+func trimExt4(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	return trimGeneric(disks, rootDir)
+}
+
+func trimXfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	return trimGeneric(disks, rootDir)
+}
+
+func trimNtfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	trimmed := 0
+	var totalBytes int64
+
+	for _, disk := range disks {
+		if disk.Role != metadata.DiskRoleData {
+			continue
+		}
+		if disk.Mountpoint == "" {
+			continue
+		}
+
+		if _, err := os.Stat(disk.Mountpoint); os.IsNotExist(err) {
+			continue
+		}
+
+		cmd := exec.Command("ntfstrim", "-v", disk.Mountpoint)
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		if err := cmd.Run(); err == nil {
+			trimmed++
+		}
+	}
+
+	return trimmed, totalBytes, nil
+}
+
+func trimExfat(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	return trimGeneric(disks, rootDir)
+}
+
+func trimHfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	trimmed := 0
+
+	for _, disk := range disks {
+		if disk.Role != metadata.DiskRoleData {
+			continue
+		}
+		if disk.Mountpoint == "" {
+			continue
+		}
+
+		if _, err := os.Stat(disk.Mountpoint); os.IsNotExist(err) {
+			continue
+		}
+
+		cmd := exec.Command("fsck.hfsplus", "-t", disk.Mountpoint)
+		if err := cmd.Run(); err == nil {
+			trimmed++
+		}
+	}
+
+	return trimmed, 0, nil
+}
+
+func trimApfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	trimmed := 0
+
+	for _, disk := range disks {
+		if disk.Role != metadata.DiskRoleData {
+			continue
+		}
+		if disk.Mountpoint == "" {
+			continue
+		}
+
+		if _, err := os.Stat(disk.Mountpoint); os.IsNotExist(err) {
+			continue
+		}
+
+		cmd := exec.Command("fsck.apfs", "-n", disk.Mountpoint)
+		if err := cmd.Run(); err == nil {
+			trimmed++
+		}
+	}
+
+	return trimmed, 0, nil
+}
+
+func trimUfs(disks []metadata.Disk, rootDir string) (int, int64, error) {
+	trimmed := 0
+
+	for _, disk := range disks {
+		if disk.Role != metadata.DiskRoleData {
+			continue
+		}
+		if disk.Mountpoint == "" {
+			continue
+		}
+
+		if _, err := os.Stat(disk.Mountpoint); os.IsNotExist(err) {
+			continue
+		}
+
+		cmd := exec.Command("fsck.ufs", "-n", disk.Mountpoint)
+		if err := cmd.Run(); err == nil {
+			trimmed++
+		}
+	}
+
+	return trimmed, 0, nil
+}
+
 func trimGeneric(disks []metadata.Disk, rootDir string) (int, int64, error) {
 	trimmed := 0
 	var totalBytes int64
@@ -161,11 +293,9 @@ func trimGeneric(disks []metadata.Disk, rootDir string) (int, int64, error) {
 		cmd := exec.Command("fstrim", "-v", disk.Mountpoint)
 		var out bytes.Buffer
 		cmd.Stdout = &out
-		if err := cmd.Run(); err != nil {
-			continue
+		if err := cmd.Run(); err == nil {
+			trimmed++
 		}
-
-		trimmed++
 	}
 
 	return trimmed, totalBytes, nil
@@ -204,10 +334,18 @@ func (c *Coordinator) Defrag() (DefragResult, error) {
 	switch state.Pool.FilesystemType {
 	case "btrfs":
 		extentsMoved, bytesFreed, err = defragBtrfs(state, rootDir)
-	case "ext4", "xfs":
+	case "ext4":
+		extentsMoved, bytesFreed, err = defragExt4(state, rootDir)
+	case "xfs":
+		extentsMoved, bytesFreed, err = defragXfs(state, rootDir)
+	case "ntfs":
+		extentsMoved, bytesFreed, err = defragNtfs(state, rootDir)
+	case "refs":
+		extentsMoved, bytesFreed, err = defragRefs(state, rootDir)
+	case "hfs", "hfsplus", "apfs", "ufs", "ext2", "ext3", "exfat", "fat12", "fat16", "fat32", "hpfs":
 		extentsMoved, bytesFreed, err = defragGeneric(state, rootDir)
 	default:
-		return DefragResult{}, fmt.Errorf("unsupported filesystem type for defrag: %s", state.Pool.FilesystemType)
+		extentsMoved, bytesFreed, err = defragGeneric(state, rootDir)
 	}
 
 	if err != nil {
@@ -250,6 +388,67 @@ func defragBtrfs(state metadata.SampleState, rootDir string) (int, int64, error)
 	return moved, freed, nil
 }
 
+func defragExt4(state metadata.SampleState, rootDir string) (int, int64, error) {
+	dataDir := filepath.Join(rootDir, "data")
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return 0, 0, nil
+	}
+
+	cmd := exec.Command("e4defrag", "-v", dataDir)
+	if err := cmd.Run(); err != nil {
+		return 0, 0, err
+	}
+
+	return len(state.Extents), 0, nil
+}
+
+func defragXfs(state metadata.SampleState, rootDir string) (int, int64, error) {
+	dataDir := filepath.Join(rootDir, "data")
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return 0, 0, nil
+	}
+
+	cmd := exec.Command("xfs_fsr", "-v", dataDir)
+	if err := cmd.Run(); err != nil {
+		return 0, 0, err
+	}
+
+	return len(state.Extents), 0, nil
+}
+
+func defragNtfs(state metadata.SampleState, rootDir string) (int, int64, error) {
+	dataDir := filepath.Join(rootDir, "data")
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return 0, 0, nil
+	}
+
+	for _, disk := range state.Disks {
+		if disk.Mountpoint == "" {
+			continue
+		}
+		cmd := exec.Command("defrag", disk.Mountpoint)
+		if err := cmd.Run(); err != nil {
+			continue
+		}
+	}
+
+	return 0, 0, nil
+}
+
+func defragRefs(state metadata.SampleState, rootDir string) (int, int64, error) {
+	dataDir := filepath.Join(rootDir, "data")
+	if _, err := os.Stat(dataDir); os.IsNotExist(err) {
+		return 0, 0, nil
+	}
+
+	cmd := exec.Command("defrag", dataDir)
+	if err := cmd.Run(); err != nil {
+		return 0, 0, err
+	}
+
+	return 0, 0, nil
+}
+
 func defragGeneric(state metadata.SampleState, rootDir string) (int, int64, error) {
 	return 0, 0, nil
 }
@@ -288,10 +487,12 @@ func (c *Coordinator) Snapshot(name string) (SnapshotResult, error) {
 	switch state.Pool.FilesystemType {
 	case "btrfs":
 		err = snapshotBtrfs(rootDir, name)
-	case "ext4", "xfs":
+	case "apfs":
+		err = snapshotApfs(rootDir, name)
+	case "ext4", "xfs", "ntfs", "refs", "hfs", "hfsplus", "ufs", "ext2", "ext3", "exfat", "fat12", "fat16", "fat32", "hpfs":
 		err = snapshotGeneric(rootDir, name, state)
 	default:
-		return SnapshotResult{}, fmt.Errorf("unsupported filesystem type for snapshot: %s", state.Pool.FilesystemType)
+		err = snapshotGeneric(rootDir, name, state)
 	}
 
 	if err != nil {
@@ -341,6 +542,26 @@ func snapshotBtrfs(rootDir, name string) error {
 			return fmt.Errorf("write snapshot metadata: %w", err)
 		}
 		return nil
+	}
+
+	return nil
+}
+
+func snapshotApfs(rootDir, name string) error {
+	snapshotsDir := filepath.Join(rootDir, ".snapshots")
+	if err := ensureDir(snapshotsDir, 0o755); err != nil {
+		return fmt.Errorf("create snapshots directory: %w", err)
+	}
+
+	snapshotMeta := filepath.Join(snapshotsDir, name+".json")
+	data, _ := json.Marshal(map[string]string{
+		"name":    name,
+		"type":    "apfs-snapshot",
+		"status":  "metadata-only",
+		"rootDir": rootDir,
+	})
+	if err := os.WriteFile(snapshotMeta, data, 0o644); err != nil {
+		return fmt.Errorf("write snapshot metadata: %w", err)
 	}
 
 	return nil

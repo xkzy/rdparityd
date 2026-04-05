@@ -37,7 +37,7 @@ import (
 
 const (
 	snapshotMagic      = "RTPM"
-	SnapshotVersion    = 1
+	SnapshotVersion    = 2
 	snapHeaderSize     = 72 // 40-byte prefix + 32-byte BLAKE3 hash
 	maxBinaryStringLen = 1<<16 - 1
 	maxBinaryCount     = 1<<16 - 1
@@ -157,8 +157,15 @@ func (s *Store) Load() (SampleState, error) {
 		return SampleState{}, fmt.Errorf("invalid metadata magic %q", string(hdrPrefix[0:4]))
 	}
 	version := binary.BigEndian.Uint16(hdrPrefix[4:6])
-	if int(version) != SnapshotVersion {
-		return SampleState{}, fmt.Errorf("unexpected metadata version %d", version)
+	if version < 1 || version > SnapshotVersion {
+		return SampleState{}, fmt.Errorf("unsupported metadata version %d (supported: 1-%d)", version, SnapshotVersion)
+	}
+	if version != SnapshotVersion {
+		state, err := migrateState(int(version), SnapshotVersion, payload)
+		if err != nil {
+			return SampleState{}, fmt.Errorf("migrate metadata from v%d to v%d: %w", version, SnapshotVersion, err)
+		}
+		return state, nil
 	}
 	savedAtNano := int64(binary.BigEndian.Uint64(hdrPrefix[8:16]))
 	if savedAtNano == 0 {
@@ -194,6 +201,136 @@ func (s *Store) LoadOrCreate(defaultState SampleState) (SampleState, error) {
 		return SampleState{}, saveErr
 	}
 	return defaultState, nil
+}
+
+// migrateState handles migration between metadata schema versions.
+// Currently v1 -> v2 adds FilesystemType, SleepEnabled, SleepTimeoutSec, SleepMinActiveSec.
+func migrateState(fromVersion, toVersion int, payload []byte) (SampleState, error) {
+	if fromVersion < 1 || toVersion > SnapshotVersion {
+		return SampleState{}, fmt.Errorf("unsupported migration from v%d to v%d", fromVersion, toVersion)
+	}
+
+	// v1 -> v2 migration
+	if fromVersion == 1 && toVersion == 2 {
+		state, err := decodeStateV1(payload)
+		if err != nil {
+			return SampleState{}, fmt.Errorf("decode v1 state: %w", err)
+		}
+		// Add new v2 fields with defaults
+		state.Pool.FilesystemType = "btrfs"
+		state.Pool.SleepEnabled = false
+		state.Pool.SleepTimeoutSec = 300
+		state.Pool.SleepMinActiveSec = 60
+		return state, nil
+	}
+
+	return SampleState{}, fmt.Errorf("no migration path from v%d to v%d", fromVersion, toVersion)
+}
+
+// decodeStateV1 decodes v1 metadata format (before FilesystemType and sleep fields).
+func decodeStateV1(data []byte) (SampleState, error) {
+	r := bytes.NewReader(data)
+	var state SampleState
+	var err error
+
+	if state.Pool, err = mreadPoolV1(r); err != nil {
+		return SampleState{}, fmt.Errorf("pool: %w", err)
+	}
+
+	numDisks, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_disks: %w", err)
+	}
+	state.Disks = make([]Disk, numDisks)
+	for i := range state.Disks {
+		if state.Disks[i], err = mreadDisk(r); err != nil {
+			return SampleState{}, fmt.Errorf("disk[%d]: %w", i, err)
+		}
+	}
+
+	numFiles, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_files: %w", err)
+	}
+	state.Files = make([]FileRecord, numFiles)
+	for i := range state.Files {
+		if state.Files[i], err = mreadFileRecord(r); err != nil {
+			return SampleState{}, fmt.Errorf("file[%d]: %w", i, err)
+		}
+	}
+
+	numExtents, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_extents: %w", err)
+	}
+	state.Extents = make([]Extent, numExtents)
+	for i := range state.Extents {
+		if state.Extents[i], err = mreadExtent(r); err != nil {
+			return SampleState{}, fmt.Errorf("extent[%d]: %w", i, err)
+		}
+	}
+
+	numGroups, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_parity_groups: %w", err)
+	}
+	state.ParityGroups = make([]ParityGroup, numGroups)
+	for i := range state.ParityGroups {
+		if state.ParityGroups[i], err = mreadParityGroup(r); err != nil {
+			return SampleState{}, fmt.Errorf("parity_group[%d]: %w", i, err)
+		}
+	}
+
+	numTx, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_transactions: %w", err)
+	}
+	state.Transactions = make([]Transaction, numTx)
+	for i := range state.Transactions {
+		if state.Transactions[i], err = mreadTransaction(r); err != nil {
+			return SampleState{}, fmt.Errorf("transaction[%d]: %w", i, err)
+		}
+	}
+
+	numScrub, err := mreadUint16(r)
+	if err != nil {
+		return SampleState{}, fmt.Errorf("num_scrub: %w", err)
+	}
+	state.ScrubHistory = make([]ScrubRun, numScrub)
+	for i := range state.ScrubHistory {
+		if state.ScrubHistory[i], err = mreadScrubRun(r); err != nil {
+			return SampleState{}, fmt.Errorf("scrub[%d]: %w", i, err)
+		}
+	}
+
+	return state, nil
+}
+
+// mreadPoolV1 reads v1 Pool format (without filesystem_type and sleep fields).
+func mreadPoolV1(r *bytes.Reader) (Pool, error) {
+	var p Pool
+	var err error
+	if p.PoolID, err = mreadStr(r); err != nil {
+		return p, err
+	}
+	if p.Name, err = mreadStr(r); err != nil {
+		return p, err
+	}
+	if p.Version, err = mreadStr(r); err != nil {
+		return p, err
+	}
+	if p.ExtentSizeBytes, err = mreadInt64(r); err != nil {
+		return p, err
+	}
+	if p.ParityMode, err = mreadStr(r); err != nil {
+		return p, err
+	}
+	nano, err := mreadInt64(r)
+	if err != nil {
+		return p, err
+	}
+	p.CreatedAt = time.Unix(0, nano).UTC()
+	return p, nil
 }
 
 // checksumState returns the BLAKE3-256 hex digest of the binary-encoded state.

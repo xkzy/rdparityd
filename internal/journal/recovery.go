@@ -105,7 +105,7 @@ func (c *Coordinator) RecoverWithState(defaultState metadata.SampleState) (Recov
 		}
 		switch last.State {
 		case StateCommitted:
-			changed, err := reconcileCommittedTransaction(&state, txRecords)
+			changed, err := reconcileCommittedTransaction(c.metadataPath, &state, txRecords)
 			if err != nil {
 				return result, fmt.Errorf("reconcile committed tx %s: %w", txID, err)
 			}
@@ -351,7 +351,7 @@ func parityChecksumStale(rootDir string, state metadata.SampleState, extents []m
 	return false
 }
 
-func reconcileCommittedTransaction(state *metadata.SampleState, txRecords []Record) (bool, error) {
+func reconcileCommittedTransaction(metadataPath string, state *metadata.SampleState, txRecords []Record) (bool, error) {
 	if len(txRecords) == 0 {
 		return false, fmt.Errorf("empty transaction record set")
 	}
@@ -364,7 +364,39 @@ func reconcileCommittedTransaction(state *metadata.SampleState, txRecords []Reco
 	}
 
 	mergeRecoveredFile(state, *last.File, last.Extents)
+
+	// Track parity checksums before merge to detect changes.
+	beforeChecksums := make(map[string]string)
+	for _, group := range state.ParityGroups {
+		beforeChecksums[group.ParityGroupID] = group.ParityChecksum
+	}
+
 	mergeParityGroups(state, last.Extents)
+
+	// I2/I5: if the transaction added new member extents to an existing
+	// parity group, the merged group will have an updated member list
+	// but the ParityChecksum will still reflect the old list.
+	// We recompute it directly from the parity file since this transaction
+	// was fully committed before the crash.
+	for i, group := range state.ParityGroups {
+		if before, ok := beforeChecksums[group.ParityGroupID]; ok {
+			// If it's the same group but generation changed, it was modified
+			if before != "" && group.Generation > 0 {
+				// Recompute from disk
+				parityPath := filepath.Join(filepath.Dir(metadataPath), "parity", group.ParityGroupID+".bin")
+				b, err := os.ReadFile(parityPath)
+				if err == nil {
+					state.ParityGroups[i].ParityChecksum = blake3Hex(b)
+				} else {
+					// We couldn't read the parity file. This is highly unexpected for a committed
+					// transaction, but if it happens, we clear the checksum so scrub will
+					// correctly identify it as missing and repair it.
+					state.ParityGroups[i].ParityChecksum = ""
+				}
+			}
+		}
+	}
+
 	committedAt := last.Timestamp
 	upsertTransaction(state, last, StateCommitted, false, &committedAt)
 	return true, nil

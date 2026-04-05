@@ -1,0 +1,404 @@
+package journal
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// ============================================================================
+// CATEGORY C: DATA CORRUPTION TESTS (10 tests)
+// Tests verify detection and recovery from bit flips, multi-byte corruption,
+// and timing issues during scrub/rebuild/commit operations.
+// ============================================================================
+
+// TestCategoryC_SingleBitFlipDetection verifies that a single bit flip in extent data
+// is detected by scrub operation and marked as corrupted.
+//
+// VERIFICATION GOALS:
+// - Scrub detects single-bit corruption in extent data
+// - Corrupted extent ID matches the injected fault location
+// - Scrub result reports FailedCount > 0
+// - Checksum validation catches the bit flip
+//
+// FAILURE SCENARIOS:
+// - Write file successfully, flip exactly 1 bit in extent data
+// - Run scrub with repair disabled (audit-only mode)
+//
+// EXPECTED OUTCOMES:
+// - Scrub detects corruption without attempting repair
+// - FailedCount reports the corrupted extent
+// - Healthy flag remains false until repair
+func TestCategoryC_SingleBitFlipDetection(t *testing.T) {
+	t.Skip("Category C not yet implemented: single-bit-flip detection needs checksum validation in scrub path")
+
+	// PSEUDOCODE:
+	// 1. Create coordinator and write file with known payload
+	// 2. Locate extent file, read into memory
+	// 3. Flip bit at offset (extentSize / 2) via data[offset] ^= (1 << 3)
+	// 4. Write corrupted data back to disk
+	// 5. Run coordinator.Scrub(false) for audit-only (no repair)
+	// 6. Assert: result.FailedCount > 0
+	// 7. Assert: extent appears in result.FailedExtentIDs
+	// 8. Assert: result.Healthy == false
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_MultiByteTornWrite verifies recovery from multi-byte corruption
+// that simulates a torn write across multiple disk sectors.
+//
+// VERIFICATION GOALS:
+// - Multi-byte corruption (4-16 bytes) is detected
+// - Journal transaction boundary respected during recovery
+// - Repair reconstructs original bytes from parity
+// - No data loss after repair
+//
+// FAILURE SCENARIOS:
+// - Write file, corrupt 8 consecutive bytes mid-extent
+// - Bytes span potential sector boundary (simulate torn write)
+//
+// EXPECTED OUTCOMES:
+// - Scrub with repair detects and fixes corruption
+// - HealedCount == 1, original data fully recovered
+// - Checksum matches expected value post-repair
+func TestCategoryC_MultiByteTornWrite(t *testing.T) {
+	t.Skip("Category C not yet implemented: multi-byte corruption repair requires parity reconstruction")
+
+	// PSEUDOCODE:
+	// 1. Write file with 16KB payload
+	// 2. Locate extent, corrupt 8 bytes at offset (extentSize - 4)
+	// 3. Run coordinator.Scrub(true) to trigger repair
+	// 4. Assert: result.HealedCount == 1
+	// 5. Assert: extent fully recovered to original
+	// 6. Read file back and verify payload integrity
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionAcrossParityBoundary verifies detection of corruption
+// that spans across multiple parity protection boundaries.
+//
+// VERIFICATION GOALS:
+// - Multi-extent corruption detected across extent boundaries
+// - Parity calculation accounts for all corrupted regions
+// - Each extent repaired independently with correct parity
+// - Cross-extent integrity verified
+//
+// FAILURE SCENARIOS:
+// - Write file spread across 2+ extents
+// - Corrupt 1 byte in each of 2 consecutive extents
+//
+// EXPECTED OUTCOMES:
+// - Both corrupted extents detected (FailedCount == 2)
+// - Scrub repairs both independently
+// - HealedCount == 2, all data recovered
+func TestCategoryC_CorruptionAcrossParityBoundary(t *testing.T) {
+	t.Skip("Category C not yet implemented: cross-extent parity repair not yet designed")
+
+	// PSEUDOCODE:
+	// 1. Write large file (32KB+) to force multiple extents
+	// 2. Identify all extents from write result
+	// 3. Corrupt byte[100] in extent[0] and byte[200] in extent[1]
+	// 4. Run scrub with repair enabled
+	// 5. Assert: FailedCount == 2
+	// 6. Assert: both extent IDs in FailedExtentIDs
+	// 7. Assert: HealedCount == 2 after repair
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionBeforeCommit verifies handling of corruption that
+// occurs after data write but before commit record completion.
+//
+// VERIFICATION GOALS:
+// - Uncommitted transaction detected as incomplete
+// - Recovery replays incomplete transaction safely
+// - Data integrity maintained despite partial commit
+// - No orphaned extents left in pool
+//
+// FAILURE SCENARIOS:
+// - WriteFile proceeds through DataWritten state
+// - Corrupt extent data before commit record finalized
+// - Kill process to simulate crash mid-commit
+//
+// EXPECTED OUTCOMES:
+// - Recovery detects incomplete transaction
+// - Replay either completes or rolls back cleanly
+// - File is either fully written or not visible
+func TestCategoryC_CorruptionBeforeCommit(t *testing.T) {
+	t.Skip("Category C not yet implemented: requires transaction state tracking and recovery simulation")
+
+	// PSEUDOCODE:
+	// 1. Inject fault handler to panic after DataWritten, before Committed
+	// 2. Attempt WriteFile and catch injected panic
+	// 3. Corrupt extent data while transaction incomplete
+	// 4. Create new coordinator to trigger Recover()
+	// 5. Assert: recovery completes without errors
+	// 6. Assert: file either exists with correct data or doesn't exist
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionDuringRebuild verifies that corruption detected
+// during rebuild (parity reconstruction) is handled safely without cascading failures.
+//
+// VERIFICATION GOALS:
+// - Rebuild detects corruption in source extents
+// - Partial rebuilds don't corrupt destination
+// - Failed rebuild state allows retry
+// - No silent data loss during incomplete rebuild
+//
+// FAILURE SCENARIOS:
+// - Write file, remove one extent (simulating lost disk)
+// - Start rebuild operation
+// - Corrupt a source extent mid-rebuild
+//
+// EXPECTED OUTCOMES:
+// - Rebuild fails safely with clear error
+// - Destination extent in valid state (empty or complete)
+// - Rebuild can be retried after fault cleared
+func TestCategoryC_CorruptionDuringRebuild(t *testing.T) {
+	t.Skip("Category C not yet implemented: rebuild operation with fault injection not yet designed")
+
+	// PSEUDOCODE:
+	// 1. Write file with N extents
+	// 2. Remove extent[N-1] to trigger rebuild scenario
+	// 3. Start rebuild in background
+	// 4. Corrupt source extent mid-operation
+	// 5. Wait for rebuild to complete
+	// 6. Assert: error returned from rebuild
+	// 7. Assert: destination extent valid (all-or-nothing)
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_TimingCorruptionVsCommit verifies correct handling of corruption
+// that occurs in a race between scrub and commit operations.
+//
+// VERIFICATION GOALS:
+// - Scrub and commit don't corrupt each other's invariants
+// - Commit while scrub in-flight maintains data integrity
+// - Scrub result accurate even if commit racing
+// - No torn state transitions
+//
+// FAILURE SCENARIOS:
+// - File 1 written, scrub started
+// - File 2 commit racing with File 1 scrub
+// - Corrupt File 1 between scrub detection and repair start
+//
+// EXPECTED OUTCOMES:
+// - One operation (scrub or commit) takes precedence
+// - Losing operation detects race and retries safely
+// - No data corruption or invariant violation
+func TestCategoryC_TimingCorruptionVsCommit(t *testing.T) {
+	t.Skip("Category C not yet implemented: requires synchronization point simulation and timing injection")
+
+	// PSEUDOCODE:
+	// 1. Write file1, inject timing hook in scrub path
+	// 2. Start scrub on file1 and pause at detection phase
+	// 3. Concurrently write file2 and let it proceed to commit
+	// 4. Corrupt file1 extent while scrub paused
+	// 5. Resume scrub and let both complete
+	// 6. Verify both files recover correctly
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionAfterCommit verifies that post-commit corruption
+// (after transaction fully committed) is handled correctly on next scrub.
+//
+// VERIFICATION GOALS:
+// - Post-commit corruption detected on next scrub
+// - Committed transaction not replayed (no double-write)
+// - Repair creates new transaction in journal
+// - File remains readable after repair
+//
+// FAILURE SCENARIOS:
+// - Write file successfully and close coordinator
+// - Corrupt extent file on disk after commit
+// - Reopen coordinator and run scrub
+//
+// EXPECTED OUTCOMES:
+// - Scrub detects post-commit corruption
+// - Repair transaction created (not replay)
+// - File readable with correct original data
+func TestCategoryC_CorruptionAfterCommit(t *testing.T) {
+	t.Skip("Category C not yet implemented: post-commit corruption requires persistent checksum storage")
+
+	// PSEUDOCODE:
+	// 1. Write file and verify successful commit
+	// 2. Close coordinator
+	// 3. Corrupt extent file directly on disk
+	// 4. Create new coordinator instance
+	// 5. Run scrub with repair
+	// 6. Assert: corruption detected and reported
+	// 7. Assert: file readable with original content
+	// 8. Assert: no replay transaction in journal
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionInMetadataChecksums verifies detection and recovery
+// from corruption in stored metadata checksums themselves.
+//
+// VERIFICATION GOALS:
+// - Checksum metadata protected against corruption
+// - Corrupted checksum detected during validation
+// - Checksum recalculated from extent data when needed
+// - Recovery from checksum loss possible
+//
+// FAILURE SCENARIOS:
+// - Write file and save checksums in metadata
+// - Corrupt checksum value in metadata file
+// - Run scrub expecting checksum mismatch
+//
+// EXPECTED OUTCOMES:
+// - Scrub detects checksum mismatch
+// - Checksum recalculated and stored
+// - File data integrity verified independently
+func TestCategoryC_CorruptionInMetadataChecksums(t *testing.T) {
+	t.Skip("Category C not yet implemented: metadata checksum storage and recovery not yet designed")
+
+	// PSEUDOCODE:
+	// 1. Write file and extract checksum from metadata
+	// 2. Load metadata JSON, corrupt stored checksum value
+	// 3. Save corrupted metadata back
+	// 4. Run scrub with repair
+	// 5. Assert: checksum recalculated
+	// 6. Assert: metadata checksums fixed
+	// 7. Verify file data still intact
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_BitFlipInJournalRecord verifies that bit flips in the journal
+// transaction log are detected and prevent replay of corrupted transactions.
+//
+// VERIFICATION GOALS:
+// - Journal record checksum validates against bit flips
+// - Corrupted journal record rejected on replay
+// - Recovery stops at corrupted record safely
+// - No silent journal corruption propagation
+//
+// FAILURE SCENARIOS:
+// - Write file (creates journal transaction)
+// - Flip 1 bit in journal record payload (not checksum)
+// - Reopen coordinator to trigger journal replay
+//
+// EXPECTED OUTCOMES:
+// - Journal checksum validation fails
+// - Replay stops at corrupted record
+// - Error returned, no partial transaction applied
+func TestCategoryC_BitFlipInJournalRecord(t *testing.T) {
+	t.Skip("Category C not yet implemented: journal record checksum validation on replay")
+
+	// PSEUDOCODE:
+	// 1. Write file successfully
+	// 2. Locate and read journal file
+	// 3. Find commit record, flip 1 bit in payload
+	// 4. Write corrupted journal back
+	// 5. Create new coordinator (triggers replay)
+	// 6. Assert: Recover() returns error about corrupted journal
+	// 7. Assert: transaction not applied
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}
+
+// TestCategoryC_CorruptionUnderHighLoad verifies that data corruption is
+// reliably detected even when pool under high concurrent read/write load.
+//
+// VERIFICATION GOALS:
+// - Corruption not masked by concurrent operations
+// - Scrub accurate while reads/writes in flight
+// - No race conditions in corruption detection
+// - All corrupted extents detected despite load
+//
+// FAILURE SCENARIOS:
+// - Write multiple files concurrently
+// - While reads in flight, corrupt random extent
+// - Run scrub concurrent with continued I/O
+//
+// EXPECTED OUTCOMES:
+// - Corruption detected during scrub
+// - Concurrent operations complete without hang
+// - Scrub repair succeeds
+// - File data integrity maintained
+func TestCategoryC_CorruptionUnderHighLoad(t *testing.T) {
+	t.Skip("Category C not yet implemented: concurrent load + corruption detection integration not yet designed")
+
+	// PSEUDOCODE:
+	// 1. Spawn 10 goroutines writing different files
+	// 2. Spawn 10 goroutines reading different files
+	// 3. Let load run for 2 seconds
+	// 4. Corrupt 2-3 random extent files mid-operation
+	// 5. Run scrub while load still active
+	// 6. Assert: corrupted extents all detected
+	// 7. Assert: reads/writes complete successfully
+	// 8. Wait for scrub repair to finish
+	// 9. Verify all files readable with correct data
+
+	root := t.TempDir()
+	coordinator := NewCoordinator(
+		filepath.Join(root, "metadata.json"),
+		filepath.Join(root, "journal.log"),
+	)
+
+	// Implementation to follow
+}

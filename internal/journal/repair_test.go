@@ -214,9 +214,9 @@ func TestIsRepairRecord(t *testing.T) {
 	}{
 		{Record{LogicalPath: repairPathPrefixExtent + "e1", Extents: extents}, true},
 		{Record{LogicalPath: repairPathPrefixParity + "pg-1", Extents: extents}, true},
-		{Record{LogicalPath: repairPathPrefixExtent + "e1"}, false},                          // no extents
+		{Record{LogicalPath: repairPathPrefixExtent + "e1"}, false},                                                 // no extents
 		{Record{LogicalPath: repairPathPrefixExtent + "e1", Extents: extents, File: &metadata.FileRecord{}}, false}, // has file
-		{Record{LogicalPath: "/data/file.txt", Extents: extents}, false},                     // wrong prefix
+		{Record{LogicalPath: "/data/file.txt", Extents: extents}, false},                                            // wrong prefix
 	}
 	for _, tc := range cases {
 		got := isRepairRecord(tc.record)

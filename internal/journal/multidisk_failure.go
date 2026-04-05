@@ -11,16 +11,16 @@ import (
 // MultiDiskFailureAnalysis describes the severity and scope of multiple
 // simultaneous disk failures in the pool.
 type MultiDiskFailureAnalysis struct {
-	FailedDisks           []string                   `json:"failed_disks"`
-	UnrecoverableExtents  []string                   `json:"unrecoverable_extents"`
-	UnrecoverableGroups   []string                   `json:"unrecoverable_parity_groups"`
-	PartiallyLostExtents  []string                   `json:"partially_lost_extents"`
-	RecoveryIsPossible    bool                       `json:"recovery_is_possible"`
-	FailureMode           string                     `json:"failure_mode"` // "single", "dual", "cascade"
-	RecommendedAction     string                     `json:"recommended_action"`
-	AffectedDataBytes     int64                      `json:"affected_data_bytes"`
-	RecoverableDataBytes  int64                      `json:"recoverable_data_bytes"`
-	UnrecoverableDataBytes int64                     `json:"unrecoverable_data_bytes"`
+	FailedDisks            []string `json:"failed_disks"`
+	UnrecoverableExtents   []string `json:"unrecoverable_extents"`
+	UnrecoverableGroups    []string `json:"unrecoverable_parity_groups"`
+	PartiallyLostExtents   []string `json:"partially_lost_extents"`
+	RecoveryIsPossible     bool     `json:"recovery_is_possible"`
+	FailureMode            string   `json:"failure_mode"` // "single", "dual", "cascade"
+	RecommendedAction      string   `json:"recommended_action"`
+	AffectedDataBytes      int64    `json:"affected_data_bytes"`
+	RecoverableDataBytes   int64    `json:"recoverable_data_bytes"`
+	UnrecoverableDataBytes int64    `json:"unrecoverable_data_bytes"`
 }
 
 // AnalyzeMultiDiskFailures examines the metadata state against the filesystem

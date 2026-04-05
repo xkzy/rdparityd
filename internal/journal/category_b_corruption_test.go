@@ -577,8 +577,8 @@ func TestB10_TruncatedJournalPartialFsync(t *testing.T) {
 // and verifies that no corruption causes unrecoverable data loss.
 func TestCategoryB_AllCorruptionsHandledSafely(t *testing.T) {
 	tests := []struct {
-		name      string
-		testFunc  func(*testing.T)
+		name     string
+		testFunc func(*testing.T)
 	}{
 		{"B1_CorruptMagicBytes", TestB1_CorruptMagicBytesDetected},
 		{"B2_CorruptTxID", TestB2_CorruptTxIDDetected},

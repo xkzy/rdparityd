@@ -2,7 +2,6 @@ package journal
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -84,10 +83,8 @@ func runExtentRepair(metadataPath string, journal *Store, state metadata.SampleS
 	// I3/I9: post-write readback — verify the bytes now on disk match the
 	// expected checksum before journaling data-written. This catches torn
 	// writes and storage-layer bit flips that occur during the write itself.
-	if written, readErr := os.ReadFile(path); readErr != nil {
-		return nil, false, fmt.Errorf("I3: post-repair readback failed for %s: %w", extent.ExtentID, readErr)
-	} else if digestBytes(normalizeExtentLength(written, extent.Length)) != extent.Checksum {
-		return nil, false, fmt.Errorf("I3: post-repair checksum mismatch for extent %s — disk did not accept the correct bytes", extent.ExtentID)
+	if err := verifyOnDiskExtentBytes(path, extent); err != nil {
+		return nil, false, fmt.Errorf("I3: post-repair readback failed for %s: %w", extent.ExtentID, err)
 	}
 	if _, err := journal.Append(withState(record, StateDataWritten)); err != nil {
 		return nil, false, fmt.Errorf("append extent repair data-written record: %w", err)

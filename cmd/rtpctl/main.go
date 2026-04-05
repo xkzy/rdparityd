@@ -49,6 +49,22 @@ func main() {
 		err = runCheckInvariants(os.Args[2:])
 	case "mount":
 		err = runMount(os.Args[2:])
+	case "trim":
+		err = runTrim(os.Args[2:])
+	case "defrag":
+		err = runDefrag(os.Args[2:])
+	case "snapshot":
+		err = runSnapshot(os.Args[2:])
+	case "enable-sleep":
+		err = runEnableSleep(os.Args[2:])
+	case "disable-sleep":
+		err = runDisableSleep(os.Args[2:])
+	case "wake-disk":
+		err = runWakeDisk(os.Args[2:])
+	case "sleep-disk":
+		err = runSleepDisk(os.Args[2:])
+	case "sleep-status":
+		err = runSleepStatus(os.Args[2:])
 	default:
 		usage()
 		os.Exit(1)
@@ -76,6 +92,14 @@ Usage:
   rtpctl rebuild-all-demo [flags]
   rtpctl check-invariants [flags]
   rtpctl mount [flags]
+  rtpctl trim [flags]
+  rtpctl defrag [flags]
+  rtpctl snapshot [flags]
+  rtpctl enable-sleep [flags]
+  rtpctl disable-sleep [flags]
+  rtpctl wake-disk [flags]
+  rtpctl sleep-disk [flags]
+  rtpctl sleep-status [flags]
 `)
 }
 
@@ -432,5 +456,254 @@ func runMount(args []string) error {
 		return fmt.Errorf("unmount: %w", err)
 	}
 	log.Printf("unmounted successfully")
+	return nil
+}
+
+func runTrim(args []string) error {
+	fset := flag.NewFlagSet("trim", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.Trim()
+	if err != nil {
+		return fmt.Errorf("trim failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runDefrag(args []string) error {
+	fset := flag.NewFlagSet("defrag", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.Defrag()
+	if err != nil {
+		return fmt.Errorf("defrag failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runSnapshot(args []string) error {
+	fset := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	name := fset.String("name", "", "snapshot name (optional, defaults to timestamp)")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.Snapshot(*name)
+	if err != nil {
+		return fmt.Errorf("snapshot failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runEnableSleep(args []string) error {
+	fset := flag.NewFlagSet("enable-sleep", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	timeoutSec := fset.Int("timeout", 300, "seconds of inactivity before sleep")
+	minActiveSec := fset.Int("min-active", 60, "minimum seconds disk must be active before considering sleep")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	if err := coord.EnableSleep(*timeoutSec, *minActiveSec); err != nil {
+		return fmt.Errorf("enable sleep failed: %w", err)
+	}
+
+	fmt.Printf("Sleep enabled: timeout=%ds, min-active=%ds\n", *timeoutSec, *minActiveSec)
+	return nil
+}
+
+func runDisableSleep(args []string) error {
+	fset := flag.NewFlagSet("disable-sleep", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	if err := coord.DisableSleep(); err != nil {
+		return fmt.Errorf("disable sleep failed: %w", err)
+	}
+
+	fmt.Println("Sleep disabled")
+	return nil
+}
+
+func runWakeDisk(args []string) error {
+	fset := flag.NewFlagSet("wake-disk", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	diskID := fset.String("disk-id", "", "disk ID to wake (required)")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	if *diskID == "" {
+		return fmt.Errorf("flag -disk-id is required")
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.WakeDisk(*diskID)
+	if err != nil {
+		return fmt.Errorf("wake disk failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runSleepDisk(args []string) error {
+	fset := flag.NewFlagSet("sleep-disk", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	diskID := fset.String("disk-id", "", "disk ID to sleep (required)")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+	if *diskID == "" {
+		return fmt.Errorf("flag -disk-id is required")
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.SleepDisk(*diskID)
+	if err != nil {
+		return fmt.Errorf("sleep disk failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
+	return nil
+}
+
+func runSleepStatus(args []string) error {
+	fset := flag.NewFlagSet("sleep-status", flag.ContinueOnError)
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	if err := fset.Parse(args); err != nil {
+		return err
+	}
+
+	coord := journal.NewCoordinator(*metadataPath, *journalPath)
+
+	recovery, err := coord.Recover()
+	if err != nil {
+		return fmt.Errorf("startup recovery: %w", err)
+	}
+	if len(recovery.RecoveredTxIDs) > 0 {
+		log.Printf("startup recovery: rolled forward %d transaction(s)", len(recovery.RecoveredTxIDs))
+	}
+
+	result, err := coord.GetSleepStatus()
+	if err != nil {
+		return fmt.Errorf("get sleep status failed: %w", err)
+	}
+
+	output, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(output))
 	return nil
 }

@@ -91,6 +91,42 @@ func (c *Coordinator) loadState(defaultState metadata.SampleState) (metadata.Sam
 	return state, nil
 }
 
+// recoveryDefaultStateLocked chooses a safe prototype state to use as the
+// fallback input to recoverWithStateLocked when replay is required before a
+// mutating or read operation proceeds. Must be called with c.mu held.
+func (c *Coordinator) recoveryDefaultStateLocked(fallbackPoolName string) metadata.SampleState {
+	if c != nil && c.cachedStateSet && c.cachedState != nil && c.cachedState.Pool.Name != "" {
+		return metadata.PrototypeState(c.cachedState.Pool.Name)
+	}
+	if c != nil && c.metadata != nil {
+		if state, err := c.metadata.Load(); err == nil && state.Pool.Name != "" {
+			return metadata.PrototypeState(state.Pool.Name)
+		}
+	}
+	if fallbackPoolName != "" {
+		return metadata.PrototypeState(fallbackPoolName)
+	}
+	return metadata.PrototypeState("demo")
+}
+
+// ensureRecoveredLocked forces journal replay before the caller performs any
+// mutation based on the currently loaded metadata snapshot. Without this
+// guard, metadata-only mutators like RenameFile/AddDisk/FailDisk could commit
+// fresh metadata derived from a stale snapshot while replayable transactions
+// still exist in the journal.
+func (c *Coordinator) ensureRecoveredLocked(fallbackPoolName string) error {
+	summary, err := c.journal.Replay()
+	if err != nil {
+		return fmt.Errorf("pre-operation journal replay check: %w", err)
+	}
+	if summary.RequiresReplay {
+		if _, err := c.recoverWithStateLocked(c.recoveryDefaultStateLocked(fallbackPoolName)); err != nil {
+			return fmt.Errorf("pre-operation recovery: %w", err)
+		}
+	}
+	return nil
+}
+
 // commitState saves state to disk and updates the in-memory cache.
 // Must be called with c.mu held.
 // commitState persists state to metadata and updates the in-memory cache.
@@ -134,6 +170,12 @@ func (c *Coordinator) commitState(state metadata.SampleState) (metadata.Snapshot
 	}
 	c.cachedState = &state
 	c.cachedStateSet = true
+
+	// Compact the journal when all transactions are in a terminal state.
+	// This is a best-effort, non-fatal operation: a compaction failure never
+	// risks data loss because the metadata snapshot is already durable.
+	_ = c.journal.CompactIfClean()
+
 	return env, nil
 }
 
@@ -148,6 +190,11 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if c == nil {
 		return WriteResult{}, fmt.Errorf("coordinator is nil")
 	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return WriteResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if req.PoolName == "" {
@@ -165,6 +212,13 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if req.Payload == nil && !req.AllowSynthetic {
 		return WriteResult{}, fmt.Errorf(
 			"payload is required for production writes; synthetic data requires explicit AllowSynthetic opt-in")
+	}
+
+	// A new allocation must never proceed while the journal still contains an
+	// interrupted transaction. Otherwise we could allocate extents against stale
+	// metadata and collide with extents that recovery has not yet merged.
+	if err := c.ensureRecoveredLocked(req.PoolName); err != nil {
+		return WriteResult{}, err
 	}
 
 	state, err := c.loadState(metadata.PrototypeState(req.PoolName))
@@ -236,6 +290,9 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return result, nil
 	}
 
+	if err := ensureHealthyCommittedParityInputs(c.metadataPath, c.journal, state, extents); err != nil {
+		return WriteResult{}, fmt.Errorf("verify committed parity inputs before parity rewrite: %w", err)
+	}
 	mergeParityGroups(&state, extents)
 	if err := writeParityFiles(filepath.Dir(c.metadataPath), &state, extents, req.parityWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write parity files: %w", err)
@@ -361,6 +418,28 @@ func min64(a, b int64) int64 {
 	return b
 }
 
+func ensureHealthyCommittedParityInputs(metadataPath string, journal *Store, state metadata.SampleState, newExtents []metadata.Extent) error {
+	newExtentSet := make(map[string]bool, len(newExtents))
+	touchedGroups := make(map[string]bool, len(newExtents))
+	for _, extent := range newExtents {
+		newExtentSet[extent.ExtentID] = true
+		touchedGroups[extent.ParityGroupID] = true
+	}
+	for _, extent := range state.Extents {
+		if !touchedGroups[extent.ParityGroupID] || newExtentSet[extent.ExtentID] {
+			continue
+		}
+		if _, repaired, err := verifyExtent(metadataPath, journal, state, extent, true, ""); err != nil {
+			return err
+		} else if repaired {
+			// The committed member was repaired before parity recomputation, so the
+			// ensuing parity file will be derived from authoritative bytes rather
+			// than folding latent corruption into the new parity image.
+		}
+	}
+	return nil
+}
+
 func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 	index := make(map[string]int)
 	for i, group := range state.ParityGroups {
@@ -402,6 +481,12 @@ func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 // Durability guarantee: each extent file is opened, written, fsynced, and
 // closed before control returns, and the parent directory is also fsynced so
 // that the directory entry (new file or updated inode) is durable.
+//
+// I3 (Post-write readback): after every extent write, the bytes are read back
+// from disk and compared to the expected checksum. This catches storage layers
+// that silently accept a write but persist different bytes. Without this guard,
+// a corrupted new extent would poison parity XOR computation and destroy the
+// parity group's recoverability permanently.
 func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte, limit int) error {
 	written := 0
 	for _, extent := range extents {
@@ -415,8 +500,19 @@ func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte,
 			return fmt.Errorf("extent %s has invalid path: %w", extent.ExtentID, err)
 		}
 		targetPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
-		if err := replaceSyncFile(targetPath, extentData(extent, payload), 0o600); err != nil {
+		intended := extentData(extent, payload)
+		if err := replaceSyncFile(targetPath, intended, 0o600); err != nil {
 			return fmt.Errorf("write extent file %s: %w", targetPath, err)
+		}
+		// I3: post-write readback — verify the bytes now on disk match the
+		// expected checksum before allowing parity computation to proceed.
+		// If the storage layer accepted the write but stored different bytes,
+		// we must detect it here or parity will be computed from corrupted data,
+		// making the parity group permanently unrecoverable.
+		if extent.Checksum != "" {
+			if err := verifyOnDiskExtentBytes(targetPath, extent); err != nil {
+				return fmt.Errorf("I3: post-write readback failed for %s: %w", extent.ExtentID, err)
+			}
 		}
 		written++
 	}
@@ -477,6 +573,20 @@ func xorInto(dst, src []byte) {
 	}
 }
 
+func verifyOnDiskExtentBytes(path string, extent metadata.Extent) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != extent.Length {
+		return fmt.Errorf("length mismatch: committed=%d disk=%d", extent.Length, len(data))
+	}
+	if digestBytes(data) != extent.Checksum {
+		return fmt.Errorf("checksum mismatch: expected=%s got=%s", extent.Checksum, digestBytes(data))
+	}
+	return nil
+}
+
 func writeParityFiles(rootDir string, state *metadata.SampleState, extents []metadata.Extent, limit int) error {
 	if len(extents) == 0 {
 		return nil
@@ -512,6 +622,13 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 		members := groups[groupID]
 		maxLen := 0
 		memberData := make([][]byte, 0, len(members))
+
+		// Build a checksum index for fast lookup during verification.
+		checksumByID := make(map[string]string, len(members))
+		for _, m := range members {
+			checksumByID[m.ExtentID] = m.Checksum
+		}
+
 		for _, member := range members {
 			if err := validateExtentRelativePath(member.PhysicalLocator.RelativePath); err != nil {
 				return fmt.Errorf("member extent %s has invalid path: %w", member.ExtentID, err)
@@ -520,6 +637,18 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 			data, err := os.ReadFile(contentPath)
 			if err != nil {
 				return fmt.Errorf("read extent file %s for parity: %w", contentPath, err)
+			}
+			// I3/I9: verify each member's checksum before XOR-ing into parity.
+			// If a member is corrupt, using it for parity computation would poison
+			// the parity group and destroy all other members' recoverability.
+			if expected := checksumByID[member.ExtentID]; expected != "" {
+				normed := normalizeExtentLength(data, member.Length)
+				if digestBytes(normed) != expected {
+					return fmt.Errorf("I3: parity input checksum mismatch for extent %s in group %s: "+
+						"member is corrupt and must be repaired before parity can be recomputed",
+						member.ExtentID, groupID)
+				}
+				data = normed
 			}
 			memberData = append(memberData, data)
 			if len(data) > maxLen {

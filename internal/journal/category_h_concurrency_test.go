@@ -890,10 +890,18 @@ func TestCategoryH_DeadlockFredomInLockingHierarchy(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, 4)
 	ops := []func() error{
-		func() error { _, err := NewCoordinator(metaPath, journalPath).RecoverWithState(metadata.PrototypeState("demo")); return err },
-		func() error { _, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/new.bin", AllowSynthetic: true, SizeBytes: 4096}); return err },
+		func() error {
+			_, err := NewCoordinator(metaPath, journalPath).RecoverWithState(metadata.PrototypeState("demo"))
+			return err
+		},
+		func() error {
+			_, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/new.bin", AllowSynthetic: true, SizeBytes: 4096})
+			return err
+		},
 		func() error { _, err := NewCoordinator(metaPath, journalPath).Scrub(true); return err },
-		func() error { return NewCoordinator(metaPath, journalPath).AddDisk("disk-extra", "55555555-5555-5555-5555-555555555555", metadata.DiskRoleData, "/mnt/data03", 4<<40) },
+		func() error {
+			return NewCoordinator(metaPath, journalPath).AddDisk("disk-extra", "55555555-5555-5555-5555-555555555555", metadata.DiskRoleData, "/mnt/data03", 4<<40)
+		},
 	}
 	for i, op := range ops {
 		wg.Add(1)

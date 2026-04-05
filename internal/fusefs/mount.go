@@ -27,7 +27,11 @@ type Options struct {
 // The caller must ensure that mountpoint is an existing empty directory.
 func Mount(mountpoint string, coord *journal.Coordinator, opts Options) (*fuse.Server, error) {
 	if opts.PoolName == "" {
-		opts.PoolName = coord.PoolName()
+		poolName, err := coord.PoolName()
+		if err != nil {
+			return nil, err
+		}
+		opts.PoolName = poolName
 	}
 
 	root := &dirNode{

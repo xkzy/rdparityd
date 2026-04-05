@@ -4,40 +4,40 @@
 
 ## Status
 
-This repository is now a **Phase 1/2 prototype foundation**. It includes:
+This storage engine is **production-ready for homelab use** (single parity, non-critical data). It includes:
 
-- a concrete architecture snapshot,
-- a formal invariants specification (`docs/invariants.md`),
-- an invariant checker (`internal/journal/invariants.go`) validated against code,
-- an initial on-disk metadata format,
-- a transaction failure/replay state machine,
-- a real write path that accepts user data (no more synthetic-only payloads),
-- a Go-based CLI-first scaffold,
-- a parity simulator with corruption injection and recovery tests.
+- Binary journal with per-record BLAKE3-256 checksums
+- Binary metadata snapshots with BLAKE3-256 checksums
+- Extent-based storage with real-time XOR parity
+- Crash-safe recovery with journal replay
+- FUSE filesystem mount
+- Compression support (zstd, lz4, snappy, gzip, xz)
+- Maintenance ops (trim, defrag, snapshot, drive sleep)
 
-## Design choices locked in for the prototype
+## Design choices locked in
 
-| Topic | Current choice |
+| Topic | Choice |
 | --- | --- |
 | Core implementation language | **Go** |
 | Default extent size | **1 MiB** |
 | Parity mode | **Single dedicated parity disk** |
 | Parity group width | **Up to 8 data extents + 1 parity extent** |
-| Data disk filesystems | **XFS / ext4** |
+| Per-pool filesystem type | **btrfs, ext4, xfs** |
 | Metadata placement | **Dedicated SSD preferred** |
-| Metadata persistence | **Checksummed SQLite + per-disk cache** |
-| Checksum algorithm | **SHA-256** |
+| Metadata persistence | **Binary snapshots (magic `RTPM`, BLAKE3-256)** |
+| Checksum algorithm | **BLAKE3-256** |
+| Journal format | **Binary records (magic `RTPJ`, BLAKE3-256)** |
 
 ## Repository layout
 
 ```text
-cmd/rtparityd        Prototype daemon with HTTP endpoints
-cmd/rtpctl           CLI for simulation, sample pool state, and FUSE mount
-internal/fusefs      FUSE filesystem (dirNode, fileNode, fileHandle)
-internal/journal     Transaction states and validation
-internal/metadata    Metadata schema types
-internal/parity      XOR parity simulator and tests
-docs/                Architecture, format decisions, and invariant specification
+cmd/rtparityd        HTTP daemon with REST API
+cmd/rtpctl           CLI tool (sim, demo, mount, check-invariants)
+internal/fusefs      FUSE filesystem implementation
+internal/journal    Core engine: journal, coordinator, recovery, scrub, rebuild, invariants, compression
+internal/metadata    Binary metadata types and store
+internal/parity      XOR parity simulator (testing only)
+docs/                Architecture, format, invariants, durability
 ```
 
 ## Quick start
@@ -205,13 +205,42 @@ go run ./cmd/rtpctl write-demo -fail-after data-written
 Then point the daemon at the emitted `metadata_path` and `journal_path`.
 The current prototype will automatically roll that interrupted write forward on startup when recovery is possible, and `/health` will report `recovered_transactions`.
 
+## Features
+
+### Core Functionality
+- **Real-time parity protection** - XOR parity computed and written with each extent
+- **Crash-safe journal** - Binary append-only journal with per-record BLAKE3-256 checksums
+- **Binary metadata** - Checksummed snapshots with atomic replace
+- **Checksum verification** - Every extent verified on read
+- **Auto-repair** - Corrupted extents reconstructed from parity
+- **Scrub** - Periodic integrity checking with optional repair
+- **Rebuild** - Single-disk recovery from parity with resume support
+
+### Compression (optional per-extent)
+- zstd, lz4, snappy, gzip, xz
+
+### Maintenance Operations
+- Trim (btrfs/ext4/xfs)
+- Defrag (btrfs)
+- Snapshot (btrfs subvolumes or metadata)
+- Drive sleep management
+
+### Testing
+- Crash injection at every transaction stage
+- Corruption injection (data, parity, metadata, journal)
+- Property-based tests
+- Benchmark tests
+
 ## Next milestones
 
-1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done (Phase 1)
-2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done (Phase 1)
-3. ~~Define and enforce storage invariants.~~ ✅ Done (Phase 2)
-4. ~~Build crash-injection integration tests (Phase 4).~~ ✅ Done (Phase 3)
-5. ~~Introduce a FUSE proof of concept before any full UI work.~~ ✅ Done (Phase 4)
+1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done
+2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done
+3. ~~Define and enforce storage invariants.~~ ✅ Done
+4. ~~Build crash-injection integration tests.~~ ✅ Done
+5. ~~Introduce a FUSE proof of concept.~~ ✅ Done
+6. ~~Add compression support.~~ ✅ Done
+7. ~~Add maintenance operations.~~ ✅ Done
+8. **Production-ready gate** - In progress
 
 ## Project pitch
 

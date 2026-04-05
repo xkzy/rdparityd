@@ -1,0 +1,18 @@
+# github.com/xkzy/rdparityd/internal/journal [github.com/xkzy/rdparityd/internal/journal.test]
+internal/journal/failure_matrix_test.go:677:6: crashAndRecover redeclared in this block
+	internal/journal/crash_test.go:34:6: other declaration of crashAndRecover
+internal/journal/failure_matrix_test.go:711:6: assertInvariantsClean redeclared in this block
+	internal/journal/crash_test.go:71:6: other declaration of assertInvariantsClean
+internal/journal/failure_matrix_test.go:737:6: assertJournalClean redeclared in this block
+	internal/journal/crash_test.go:94:6: other declaration of assertJournalClean
+internal/journal/failure_matrix_test.go:749:6: makePayload redeclared in this block
+	internal/journal/crash_test.go:106:6: other declaration of makePayload
+internal/journal/category_b_corruption_test.go:274:13: state.Pool.Generation undefined (type metadata.Pool has no field or method Generation)
+internal/journal/category_f_full_scrub_test.go:50:2: declared and not used: coordinator
+internal/journal/category_f_full_scrub_test.go:93:2: declared and not used: coordinator
+internal/journal/category_f_full_scrub_test.go:133:2: declared and not used: coordinator
+internal/journal/category_f_full_scrub_test.go:176:2: declared and not used: coordinator
+internal/journal/category_f_full_scrub_test.go:216:2: declared and not used: coordinator
+internal/journal/category_f_full_scrub_test.go:216:2: too many errors
+FAIL	github.com/xkzy/rdparityd/internal/journal [build failed]
+FAIL

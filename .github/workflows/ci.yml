@@ -26,8 +26,20 @@ jobs:
         run: make fmt
         continue-on-error: false
 
-      - name: Run tests
-        run: go test -v ./...
+      - name: Run tests (short)
+        run: go test -short -v ./...
+
+      - name: Run tests (property-based)
+        run: go test -v -run "TestProperty_" ./internal/journal
+
+      - name: Run tests (stress/soak)
+        run: go test -v -run "TestStress_" ./internal/journal
+
+      - name: Run tests (crash injection)
+        run: go test -v -run "TestWriteAtomicity|TestCategory" ./internal/journal
+
+      - name: Run tests (rebuild)
+        run: go test -v -run "TestRebuild" ./internal/journal
 
       - name: Build binaries
         run: |

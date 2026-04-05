@@ -52,14 +52,32 @@ const (
 	rebuildProgressHdr   = 48 // magic(4) + count(4) + ts(8) + hash(32)
 )
 
-// progressPath returns the filesystem path for a rebuild progress file.
-// diskID is sanitized to its base component so that a malicious value such as
-// "../../etc/passwd" cannot escape the metadata directory.
-func progressPath(metadataPath, diskID string) string {
-	safe := filepath.Base(diskID)
-	if safe == "." || safe == "/" {
-		safe = "_"
+// sanitizeDiskID returns a filename-safe representation of diskID by
+// replacing every character that is not alphanumeric, a dash, or an
+// underscore with an underscore. This prevents path traversal attacks when
+// diskID is used to construct a filesystem path.
+func sanitizeDiskID(diskID string) string {
+	if diskID == "" {
+		return "_"
 	}
+	out := make([]byte, len(diskID))
+	for i := 0; i < len(diskID); i++ {
+		c := diskID[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' {
+			out[i] = c
+		} else {
+			out[i] = '_'
+		}
+	}
+	return string(out)
+}
+
+// progressPath returns the filesystem path for a rebuild progress file.
+// diskID is passed through sanitizeDiskID so that arbitrary user input cannot
+// cause path traversal or write to unexpected locations.
+func progressPath(metadataPath, diskID string) string {
+	safe := sanitizeDiskID(diskID)
 	return filepath.Join(filepath.Dir(metadataPath), "rebuild-"+safe+".progress")
 }
 

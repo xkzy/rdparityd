@@ -164,10 +164,10 @@ func TestWriteAtomicityCrashBetweenCommitAndReturn(t *testing.T) {
 	// Write a complete transaction.
 	coord1 := NewCoordinator(metaPath, journalPath)
 	result, err := coord1.WriteFile(WriteRequest{
-		PoolName:    "test-crash-commit",
-		LogicalPath: "/test/crash-file.bin",
+		PoolName:       "test-crash-commit",
+		LogicalPath:    "/test/crash-file.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
+		SizeBytes:      4096,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -176,11 +176,11 @@ func TestWriteAtomicityCrashBetweenCommitAndReturn(t *testing.T) {
 	// Now simulate a scenario where the write succeeded but recovery is needed.
 	// Create a new write that fails and needs recovery.
 	result2, err := coord1.WriteFile(WriteRequest{
-		PoolName:    "test-crash-commit",
-		LogicalPath: "/test/crash-file2.bin",
+		PoolName:       "test-crash-commit",
+		LogicalPath:    "/test/crash-file2.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
-		FailAfter:   StateParityWritten,
+		SizeBytes:      4096,
+		FailAfter:      StateParityWritten,
 	})
 	if err != nil {
 		t.Fatalf("Second WriteFile: %v", err)
@@ -226,11 +226,11 @@ func TestWriteAtomicityDoubleFailureIsDetected(t *testing.T) {
 
 	// First attempt: fail at StateDataWritten.
 	_, err := coord.WriteFile(WriteRequest{
-		PoolName:    "test-double-fail",
-		LogicalPath: "/test/fail-twice.bin",
+		PoolName:       "test-double-fail",
+		LogicalPath:    "/test/fail-twice.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
-		FailAfter:   StateDataWritten,
+		SizeBytes:      4096,
+		FailAfter:      StateDataWritten,
 	})
 	if err != nil {
 		t.Fatalf("First WriteFile: %v", err)

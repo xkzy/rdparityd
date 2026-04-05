@@ -50,3 +50,31 @@ func ValidateSequence(states []State) error {
 	}
 	return nil
 }
+
+func ValidateRecordSequence(records []Record) error {
+	if len(records) == 0 {
+		return fmt.Errorf("empty state sequence")
+	}
+	states := make([]State, 0, len(records))
+	for _, record := range records {
+		states = append(states, record.State)
+	}
+	if !isRepairRecord(records[0]) {
+		return ValidateSequence(states)
+	}
+	for i := 1; i < len(states); i++ {
+		from := states[i-1]
+		to := states[i]
+		if from == StatePrepared && (to == StateDataWritten || to == StateReplayRequired) {
+			continue
+		}
+		if from == StateDataWritten && (to == StateCommitted || to == StateReplayRequired) {
+			continue
+		}
+		if from == StateReplayRequired && (to == StateCommitted || to == StateAborted) {
+			continue
+		}
+		return fmt.Errorf("invalid journal transition %q -> %q", from, to)
+	}
+	return nil
+}

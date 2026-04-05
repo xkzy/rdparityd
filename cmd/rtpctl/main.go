@@ -220,17 +220,22 @@ func runWriteDemo(args []string) error {
 	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-metadata-%d.json", time.Now().UnixNano())), "metadata snapshot path")
 	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), fmt.Sprintf("rtparityd-journal-%d.log", time.Now().UnixNano())), "journal log path")
 	filePath := fs.String("path", "/shares/demo/write.bin", "logical file path to write")
-	inputFile := fs.String("input-file", "", "path to a real file whose bytes will be written (overrides -size-bytes)")
-	sizeBytes := fs.Int64("size-bytes", 2*(1<<20)+123, "file size in bytes (synthetic data); ignored when -input-file is set")
+	inputFile := fs.String("input-file", "", "path to a real file whose bytes will be written (required for production)")
+	sizeBytes := fs.Int64("size-bytes", 2*(1<<20)+123, "file size in bytes (requires -synthetic flag)")
+	synthetic := fs.Bool("synthetic", false, "allow synthetic deterministic data for testing (not for production)")
 	failAfter := fs.String("fail-after", "", "optional stop stage: prepared|data-written|parity-written|metadata-written")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	if *inputFile == "" && !*synthetic {
+		return fmt.Errorf("production write requires -input-file; use -synthetic only for testing")
+	}
+
 	req := journal.WriteRequest{
 		PoolName:       *poolName,
 		LogicalPath:    *filePath,
-		AllowSynthetic: *inputFile == "",
+		AllowSynthetic: *synthetic,
 		SizeBytes:      *sizeBytes,
 		FailAfter:      journal.State(*failAfter),
 	}

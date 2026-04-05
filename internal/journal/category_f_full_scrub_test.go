@@ -1253,7 +1253,7 @@ func TestCategoryF_ScrubRepairDoesntCorruptHealthyExtents(t *testing.T) {
 		t.Fatalf("expected FailedCount=0 after successful repair, got %d", repairResult.FailedCount)
 	}
 
-if len(repairResult.HealedExtentIDs) != 1 {
+	if len(repairResult.HealedExtentIDs) != 1 {
 		t.Fatalf("expected exactly 1 healed extent, got %d (%v)", len(repairResult.HealedExtentIDs), repairResult.HealedExtentIDs)
 	}
 	if repairResult.HealedExtentIDs[0] != targetExtent.ExtentID {

@@ -126,9 +126,42 @@ func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter 
 		return ReadResult{}, err
 	}
 
+	// Check cache first
+	cache := c.getReadCache()
+	cachedContent := make([]byte, 0, file.SizeBytes)
+	allCached := true
+	for _, ext := range extents {
+		if data, ok := cache.Get(ext.ExtentID); ok {
+			cachedContent = append(cachedContent, data...)
+		} else {
+			allCached = false
+			break
+		}
+	}
+	if allCached && len(extents) > 0 && int64(len(cachedContent)) == file.SizeBytes {
+		return ReadResult{
+			File:            file,
+			BytesRead:       int64(len(cachedContent)),
+			Verified:        true,
+			HealedExtentIDs: nil,
+			ContentChecksum: digestBytes(cachedContent),
+			Data:            cachedContent,
+		}, nil
+	}
+
 	// Use concurrent read for multiple extents on different disks
 	if len(extents) > 1 {
-		return c.readFileParallel(logicalPath, state, file, extents)
+		result, err := c.readFileParallel(logicalPath, state, file, extents)
+		if err == nil && len(result.HealedExtentIDs) == 0 && cache != nil {
+			for _, ext := range extents {
+				start := int(ext.LogicalOffset)
+				end := start + int(ext.Length)
+				if end <= len(result.Data) {
+					cache.Put(ext.ExtentID, result.Data[start:end])
+				}
+			}
+		}
+		return result, err
 	}
 
 	content := make([]byte, 0, file.SizeBytes)
@@ -141,6 +174,8 @@ func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter 
 		content = append(content, data...)
 		if repaired {
 			healed = append(healed, extent.ExtentID)
+		} else if cache != nil {
+			cache.Put(extent.ExtentID, data)
 		}
 	}
 

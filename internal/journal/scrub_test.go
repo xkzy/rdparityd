@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 func TestCoordinatorScrubReportsHealthyPool(t *testing.T) {

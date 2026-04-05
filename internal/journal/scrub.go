@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 type ScrubIssue struct {

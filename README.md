@@ -4,11 +4,14 @@
 
 ## Status
 
-This repository is now a **Phase 0/1 prototype foundation**. It includes:
+This repository is now a **Phase 1/2 prototype foundation**. It includes:
 
 - a concrete architecture snapshot,
+- a formal invariants specification (`docs/invariants.md`),
+- an invariant checker (`internal/journal/invariants.go`) validated against code,
 - an initial on-disk metadata format,
 - a transaction failure/replay state machine,
+- a real write path that accepts user data (no more synthetic-only payloads),
 - a Go-based CLI-first scaffold,
 - a parity simulator with corruption injection and recovery tests.
 
@@ -23,16 +26,18 @@ This repository is now a **Phase 0/1 prototype foundation**. It includes:
 | Data disk filesystems | **XFS / ext4** |
 | Metadata placement | **Dedicated SSD preferred** |
 | Metadata persistence | **Checksummed SQLite + per-disk cache** |
+| Checksum algorithm | **SHA-256** |
 
 ## Repository layout
 
 ```text
 cmd/rtparityd        Prototype daemon with HTTP endpoints
-cmd/rtpctl           CLI for simulation and sample pool state
+cmd/rtpctl           CLI for simulation, sample pool state, and FUSE mount
+internal/fusefs      FUSE filesystem (dirNode, fileNode, fileHandle)
 internal/journal     Transaction states and validation
 internal/metadata    Metadata schema types
 internal/parity      XOR parity simulator and tests
-docs/                Architecture and format decisions
+docs/                Architecture, format decisions, and invariant specification
 ```
 
 ## Quick start
@@ -54,6 +59,8 @@ go run ./cmd/rtpctl scrub-demo
 go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
 go run ./cmd/rtpctl rebuild-all-demo
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -full
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
@@ -96,6 +103,9 @@ go run ./cmd/rtpctl allocate-demo
 
 ```bash
 go run ./cmd/rtpctl write-demo
+
+# Write a real file's bytes (round-trips on read-demo):
+go run ./cmd/rtpctl write-demo -input-file /path/to/real.bin -path /shares/demo/real.bin
 ```
 
 ### Verify and self-heal a stored file on read
@@ -142,6 +152,50 @@ go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.json
 curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 ```
 
+### Verify storage invariants
+
+Verify all structural invariants (in-memory, no disk IO):
+
+```bash
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log
+```
+
+Full integrity check including on-disk extent and parity data:
+
+```bash
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log -full
+```
+
+See `docs/invariants.md` for the full invariant specification.
+
+### Mount the pool as a FUSE filesystem
+
+```bash
+# Create the mountpoint.
+mkdir -p /mnt/pool
+
+# Mount (blocks until Ctrl-C or fusermount -u /mnt/pool).
+go run ./cmd/rtpctl mount \
+  -mountpoint /mnt/pool \
+  -metadata-path /tmp/rtparityd/metadata.json \
+  -journal-path  /tmp/rtparityd/journal.log \
+  -pool-name demo
+
+# In another terminal: write, list, read via normal POSIX APIs.
+echo "hello rdparityd" > /mnt/pool/shares/demo/hello.txt
+ls -la /mnt/pool/shares/demo/
+cat /mnt/pool/shares/demo/hello.txt
+
+# Unmount.
+fusermount -u /mnt/pool
+```
+
+Files written through the FUSE mount are committed to the coordinator's journaled
+write path (full parity + checksum) on `close(2)`. They survive unmount/remount
+and are also visible via `curl http://127.0.0.1:8080/v1/read?path=/shares/demo/hello.txt`.
+Startup recovery runs automatically on mount so any interrupted prior writes are
+rolled forward before the filesystem begins serving requests.
+
 ### Simulate a crash after `data-written`
 
 ```bash
@@ -153,10 +207,11 @@ The current prototype will automatically roll that interrupted write forward on 
 
 ## Next milestones
 
-1. Persist the journal to disk and replay it on startup.
-2. Add an extent allocator and durable metadata store.
-3. Build crash-injection integration tests.
-4. Introduce a FUSE proof of concept before any full UI work.
+1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done (Phase 1)
+2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done (Phase 1)
+3. ~~Define and enforce storage invariants.~~ ✅ Done (Phase 2)
+4. ~~Build crash-injection integration tests (Phase 4).~~ ✅ Done (Phase 3)
+5. ~~Introduce a FUSE proof of concept before any full UI work.~~ ✅ Done (Phase 4)
 
 ## Project pitch
 

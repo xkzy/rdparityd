@@ -8,14 +8,22 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
+
+// ChecksumAlgorithm re-exports metadata.ChecksumAlgorithm for callers that
+// import only the journal package. Both constants refer to the same value.
+const ChecksumAlgorithm = metadata.ChecksumAlgorithm
 
 type WriteRequest struct {
 	PoolName    string `json:"pool_name"`
 	LogicalPath string `json:"logical_path"`
-	SizeBytes   int64  `json:"size_bytes"`
-	FailAfter   State  `json:"fail_after,omitempty"`
+	// Payload holds the real user data to write. When set, SizeBytes is derived
+	// from len(Payload). When nil, SizeBytes controls allocation and synthetic
+	// data is written (useful for demos and tests).
+	Payload   []byte `json:"payload,omitempty"`
+	SizeBytes int64  `json:"size_bytes"`
+	FailAfter State  `json:"fail_after,omitempty"`
 }
 
 type WriteResult struct {
@@ -54,6 +62,9 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 	if req.LogicalPath == "" {
 		return WriteResult{}, fmt.Errorf("logical path is required")
+	}
+	if req.Payload != nil {
+		req.SizeBytes = int64(len(req.Payload))
 	}
 	if req.SizeBytes < 0 {
 		return WriteResult{}, fmt.Errorf("size must be non-negative")
@@ -109,8 +120,8 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return result, nil
 	}
 
-	applyExtentChecksums(&state, extents)
-	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents); err != nil {
+	applyExtentChecksums(&state, extents, req.Payload)
+	if err := writeExtentFiles(filepath.Dir(c.metadataPath), extents, req.Payload); err != nil {
 		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
 	}
 	result.Extents = extents
@@ -176,11 +187,15 @@ func shouldStopAfter(target, current State) bool {
 	return target != "" && target == current
 }
 
-func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent) {
+// applyExtentChecksums computes and stores SHA-256 checksums for each extent.
+// When payload is non-nil, checksums are derived from the corresponding slice
+// of real user data. When payload is nil, checksums are computed from
+// deterministic synthetic data so that demos and tests remain self-consistent.
+func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent, payload []byte) {
 	checksums := make(map[string]string, len(extents))
 	for i := range extents {
-		payload := extentPayloadBytes(extents[i])
-		checksum := digestBytes(payload)
+		data := extentData(extents[i], payload)
+		checksum := digestBytes(data)
 		extents[i].Checksum = checksum
 		checksums[extents[i].ExtentID] = checksum
 	}
@@ -188,9 +203,43 @@ func applyExtentChecksums(state *metadata.SampleState, extents []metadata.Extent
 	for i := range state.Extents {
 		if checksum, ok := checksums[state.Extents[i].ExtentID]; ok {
 			state.Extents[i].Checksum = checksum
-			state.Extents[i].ChecksumAlg = "blake3"
+			state.Extents[i].ChecksumAlg = ChecksumAlgorithm
 		}
 	}
+}
+
+// extentData returns the bytes for an extent. When payload is non-nil it slices
+// the real user data; otherwise it falls back to deterministic synthetic data so
+// that demo and test paths remain self-consistent without requiring real input.
+func extentData(extent metadata.Extent, payload []byte) []byte {
+	if payload != nil {
+		return clampedPayloadSlice(payload, extent.LogicalOffset, extent.Length)
+	}
+	return syntheticExtentBytes(extent)
+}
+
+// clampedPayloadSlice returns a slice of src of exactly wantLen bytes starting
+// at offset. If the source is shorter than the requested range the result is
+// zero-padded so that every extent has a consistent, predictable length for
+// parity XOR operations.
+func clampedPayloadSlice(src []byte, offset, wantLen int64) []byte {
+	n := int64(len(src))
+	start := min64(offset, n)
+	end := min64(offset+wantLen, n)
+	slice := src[start:end]
+	if int64(len(slice)) == wantLen {
+		return append([]byte(nil), slice...)
+	}
+	out := make([]byte, wantLen)
+	copy(out, slice)
+	return out
+}
+
+func min64(a, b int64) int64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
@@ -227,21 +276,26 @@ func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 	}
 }
 
-func writeExtentFiles(rootDir string, extents []metadata.Extent) error {
+// writeExtentFiles writes each extent's data to its physical location on disk.
+// When payload is non-nil, real user data is used; otherwise synthetic data is
+// written so demo and test commands remain functional without real input.
+func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte) error {
 	for _, extent := range extents {
 		targetPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
 		}
 
-		if err := os.WriteFile(targetPath, extentPayloadBytes(extent), 0o600); err != nil {
+		if err := os.WriteFile(targetPath, extentData(extent, payload), 0o600); err != nil {
 			return fmt.Errorf("write extent file %s: %w", targetPath, err)
 		}
 	}
 	return nil
 }
 
-func extentPayloadBytes(extent metadata.Extent) []byte {
+// syntheticExtentBytes generates deterministic fake data for an extent.
+// Used only in demo and test paths where no real payload is supplied.
+func syntheticExtentBytes(extent metadata.Extent) []byte {
 	seed := fmt.Sprintf("%s|%s|%d|%d|%s", extent.ExtentID, extent.FileID, extent.LogicalOffset, extent.Length, extent.ParityGroupID)
 	data := make([]byte, extent.Length)
 	block := sha256.Sum256([]byte(seed))

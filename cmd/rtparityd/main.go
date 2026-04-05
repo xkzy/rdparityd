@@ -6,13 +6,18 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/journal"
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/journal"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 type runtimeState struct {
+	// mu protects concurrent access to all mutable runtimeState fields.
+	// Handlers must hold mu.RLock for reads and mu.Lock for writes to
+	// Prototype and JournalSummary.
+	mu             sync.RWMutex
 	StartedAt      time.Time              `json:"started_at"`
 	Prototype      metadata.SampleState   `json:"prototype"`
 	MetadataPath   string                 `json:"metadata_path"`
@@ -48,7 +53,7 @@ func main() {
 	}
 
 	log.Printf("starting rtparityd prototype on %s", *listen)
-	if err := http.ListenAndServe(*listen, newMux(state)); err != nil {
+	if err := http.ListenAndServe(*listen, newMux(&state)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -91,7 +96,7 @@ func joinStartupError(current, next string) string {
 	return current + "; " + next
 }
 
-func (s runtimeState) healthStatus() string {
+func (s *runtimeState) healthStatus() string {
 	if s.StartupError != "" {
 		return "error"
 	}
@@ -101,44 +106,67 @@ func (s runtimeState) healthStatus() string {
 	return "ok"
 }
 
-func newMux(state runtimeState) *http.ServeMux {
+func newMux(state *runtimeState) *http.ServeMux {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.RLock()
+		scrubHistory := state.Prototype.ScrubHistory
+		poolExtentSize := state.Prototype.Pool.ExtentSizeBytes
+		poolParityMode := state.Prototype.Pool.ParityMode
+		metadataPath := state.MetadataPath
+		managedFiles := len(state.Prototype.Files)
+		allocatedExtents := len(state.Prototype.Extents)
+		recoveredTxs := len(state.Recovery.RecoveredTxIDs)
+		journalPath := state.JournalPath
+		journalRecords := state.JournalSummary.TotalRecords
+		journalReplay := state.JournalSummary.RequiresReplay
+		startedAt := state.StartedAt
+		startupError := state.StartupError
+		status := state.healthStatus()
+		state.mu.RUnlock()
+
 		var lastScrub any
-		if len(state.Prototype.ScrubHistory) > 0 {
-			lastScrub = state.Prototype.ScrubHistory[len(state.Prototype.ScrubHistory)-1]
+		if len(scrubHistory) > 0 {
+			lastScrub = scrubHistory[len(scrubHistory)-1]
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":                    "rtparityd",
-			"status":                  state.healthStatus(),
+			"status":                  status,
 			"version":                 "0.1.0-prototype",
-			"default_extent_bytes":    state.Prototype.Pool.ExtentSizeBytes,
-			"parity_mode":             state.Prototype.Pool.ParityMode,
-			"metadata_path":           state.MetadataPath,
-			"managed_files":           len(state.Prototype.Files),
-			"allocated_extents":       len(state.Prototype.Extents),
-			"recovered_transactions":  len(state.Recovery.RecoveredTxIDs),
-			"journal_path":            state.JournalPath,
-			"journal_records":         state.JournalSummary.TotalRecords,
-			"journal_requires_replay": state.JournalSummary.RequiresReplay,
-			"scrub_runs":              len(state.Prototype.ScrubHistory),
+			"default_extent_bytes":    poolExtentSize,
+			"parity_mode":             poolParityMode,
+			"metadata_path":           metadataPath,
+			"managed_files":           managedFiles,
+			"allocated_extents":       allocatedExtents,
+			"recovered_transactions":  recoveredTxs,
+			"journal_path":            journalPath,
+			"journal_records":         journalRecords,
+			"journal_requires_replay": journalReplay,
+			"scrub_runs":              len(scrubHistory),
 			"last_scrub":              lastScrub,
 			"timestamp":               time.Now().UTC(),
-			"started_at":              state.StartedAt,
-			"startup_error":           state.StartupError,
+			"started_at":              startedAt,
+			"startup_error":           startupError,
 		})
 	})
 
 	mux.HandleFunc("/v1/pools", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, []metadata.Pool{state.Prototype.Pool})
+		state.mu.RLock()
+		pool := state.Prototype.Pool
+		state.mu.RUnlock()
+		writeJSON(w, http.StatusOK, []metadata.Pool{pool})
 	})
 
 	mux.HandleFunc("/v1/design", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.RLock()
+		extentSize := state.Prototype.Pool.ExtentSizeBytes
+		parityMode := state.Prototype.Pool.ParityMode
+		state.mu.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"language":             "go",
-			"extent_size_bytes":    state.Prototype.Pool.ExtentSizeBytes,
-			"parity_mode":          state.Prototype.Pool.ParityMode,
+			"extent_size_bytes":    extentSize,
+			"parity_mode":          parityMode,
 			"max_parity_group":     8,
 			"metadata_device_hint": "dedicated SSD",
 			"journal_format":       journal.RecordMagic,
@@ -146,25 +174,42 @@ func newMux(state runtimeState) *http.ServeMux {
 	})
 
 	mux.HandleFunc("/v1/journal", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.RLock()
+		journalPath := state.JournalPath
+		status := state.healthStatus()
+		recovery := state.Recovery
+		summary := state.JournalSummary
+		startupError := state.StartupError
+		state.mu.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"journal_path":  state.JournalPath,
-			"status":        state.healthStatus(),
-			"recovery":      state.Recovery,
-			"summary":       state.JournalSummary,
-			"startup_error": state.StartupError,
+			"journal_path":  journalPath,
+			"status":        status,
+			"recovery":      recovery,
+			"summary":       summary,
+			"startup_error": startupError,
 		})
 	})
 
 	mux.HandleFunc("/v1/metadata", func(w http.ResponseWriter, r *http.Request) {
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		status := state.healthStatus()
+		files := state.Prototype.Files
+		extents := state.Prototype.Extents
+		parityGroups := state.Prototype.ParityGroups
+		transactions := state.Prototype.Transactions
+		scrubHistory := state.Prototype.ScrubHistory
+		startupError := state.StartupError
+		state.mu.RUnlock()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"metadata_path": state.MetadataPath,
-			"status":        state.healthStatus(),
-			"files":         state.Prototype.Files,
-			"extents":       state.Prototype.Extents,
-			"parity_groups": state.Prototype.ParityGroups,
-			"transactions":  state.Prototype.Transactions,
-			"scrub_history": state.Prototype.ScrubHistory,
-			"startup_error": state.StartupError,
+			"metadata_path": metadataPath,
+			"status":        status,
+			"files":         files,
+			"extents":       extents,
+			"parity_groups": parityGroups,
+			"transactions":  transactions,
+			"scrub_history": scrubHistory,
+			"startup_error": startupError,
 		})
 	})
 
@@ -177,7 +222,12 @@ func newMux(state runtimeState) *http.ServeMux {
 			return
 		}
 
-		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).ReadFile(logicalPath)
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		journalPath := state.JournalPath
+		state.mu.RUnlock()
+
+		result, err := journal.NewCoordinator(metadataPath, journalPath).ReadFile(logicalPath)
 		if err != nil {
 			status := http.StatusInternalServerError
 			if strings.Contains(err.Error(), "file not found") {
@@ -209,13 +259,25 @@ func newMux(state runtimeState) *http.ServeMux {
 			return
 		}
 
-		if loadedState, err := metadata.NewStore(state.MetadataPath).LoadOrCreate(metadata.PrototypeState(state.Prototype.Pool.Name)); err == nil {
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		poolName := state.Prototype.Pool.Name
+		state.mu.RUnlock()
+
+		if loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName)); err == nil {
+			state.mu.Lock()
 			state.Prototype = loadedState
+			state.mu.Unlock()
 		}
+
+		state.mu.RLock()
+		scrubHistory := state.Prototype.ScrubHistory
+		state.mu.RUnlock()
+
 		writeJSON(w, http.StatusOK, map[string]any{
-			"metadata_path": state.MetadataPath,
-			"count":         len(state.Prototype.ScrubHistory),
-			"history":       state.Prototype.ScrubHistory,
+			"metadata_path": metadataPath,
+			"count":         len(scrubHistory),
+			"history":       scrubHistory,
 		})
 	})
 
@@ -231,7 +293,13 @@ func newMux(state runtimeState) *http.ServeMux {
 		repairValue := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("repair")))
 		repair := repairValue == "true" || repairValue == "1" || (repairValue == "" && r.Method == http.MethodPost)
 
-		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).Scrub(repair)
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		journalPath := state.JournalPath
+		poolName := state.Prototype.Pool.Name
+		state.mu.RUnlock()
+
+		result, err := journal.NewCoordinator(metadataPath, journalPath).Scrub(repair)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"repair": repair,
@@ -240,11 +308,15 @@ func newMux(state runtimeState) *http.ServeMux {
 			return
 		}
 
-		if loadedState, err := metadata.NewStore(state.MetadataPath).LoadOrCreate(metadata.PrototypeState(state.Prototype.Pool.Name)); err == nil {
+		if loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName)); err == nil {
+			state.mu.Lock()
 			state.Prototype = loadedState
+			state.mu.Unlock()
 		}
-		if summary, err := journal.NewStore(state.JournalPath).Replay(); err == nil {
+		if summary, err := journal.NewStore(journalPath).Replay(); err == nil {
+			state.mu.Lock()
 			state.JournalSummary = summary
+			state.mu.Unlock()
 		}
 
 		writeJSON(w, http.StatusOK, result)
@@ -259,7 +331,12 @@ func newMux(state runtimeState) *http.ServeMux {
 			return
 		}
 
-		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).RebuildAllDataDisks()
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		journalPath := state.JournalPath
+		state.mu.RUnlock()
+
+		result, err := journal.NewCoordinator(metadataPath, journalPath).RebuildAllDataDisks()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error": err.Error(),
@@ -287,7 +364,12 @@ func newMux(state runtimeState) *http.ServeMux {
 			return
 		}
 
-		result, err := journal.NewCoordinator(state.MetadataPath, state.JournalPath).RebuildDataDisk(diskID)
+		state.mu.RLock()
+		metadataPath := state.MetadataPath
+		journalPath := state.JournalPath
+		state.mu.RUnlock()
+
+		result, err := journal.NewCoordinator(metadataPath, journalPath).RebuildDataDisk(diskID)
 		if err != nil {
 			status := http.StatusInternalServerError
 			if strings.Contains(err.Error(), "no extents mapped") {

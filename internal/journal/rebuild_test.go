@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 func TestCoordinatorRebuildDataDiskRestoresMissingExtents(t *testing.T) {

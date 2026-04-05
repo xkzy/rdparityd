@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 func TestCoordinatorWriteFileCommitsMetadataAndJournal(t *testing.T) {
@@ -151,5 +151,57 @@ func TestCoordinatorRecoverRollsForwardDataWrittenTransaction(t *testing.T) {
 	}
 	if len(state.ParityGroups) == 0 || state.ParityGroups[0].ParityChecksum == "" {
 		t.Fatalf("expected parity metadata after recovery, got %#v", state.ParityGroups)
+	}
+}
+
+func TestCoordinatorWriteFileWithRealPayload(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := NewCoordinator(metadataPath, journalPath)
+
+	payload := make([]byte, (1<<20)+512)
+	for i := range payload {
+		payload[i] = byte(i % 251)
+	}
+
+	result, err := coordinator.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/real-data.bin",
+		Payload:     payload,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile with real payload returned error: %v", err)
+	}
+	if result.FinalState != StateCommitted {
+		t.Fatalf("expected committed state, got %q", result.FinalState)
+	}
+	if len(result.Extents) != 2 {
+		t.Fatalf("expected 2 extents for payload, got %d", len(result.Extents))
+	}
+	for _, extent := range result.Extents {
+		if extent.Checksum == "" {
+			t.Fatalf("expected checksum for extent %s", extent.ExtentID)
+		}
+		if extent.ChecksumAlg != ChecksumAlgorithm {
+			t.Fatalf("expected %s checksum alg for extent %s, got %q", ChecksumAlgorithm, extent.ExtentID, extent.ChecksumAlg)
+		}
+	}
+
+	readResult, err := coordinator.ReadFile("/shares/demo/real-data.bin")
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	if !readResult.Verified {
+		t.Fatal("expected verified read")
+	}
+	if readResult.BytesRead != int64(len(payload)) {
+		t.Fatalf("expected %d bytes read, got %d", len(payload), readResult.BytesRead)
+	}
+
+	// Verify the actual bytes round-trip correctly.
+	for i := range payload {
+		if readResult.Data[i] != payload[i] {
+			t.Fatalf("data mismatch at byte %d: expected %d, got %d", i, payload[i], readResult.Data[i])
+		}
 	}
 }

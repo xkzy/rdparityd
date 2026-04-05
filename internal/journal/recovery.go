@@ -2,10 +2,11 @@ package journal
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/rtparityd/rtparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
 type RecoveryResult struct {
@@ -98,9 +99,24 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 	}
 
 	mergeRecoveredFile(state, *last.File, last.Extents)
+
+	// For states where parity was already durably written, merge parity group
+	// metadata into state BEFORE verifying extent files. This is required so
+	// that ensureExtentFiles can use parity reconstruction as a fallback when
+	// an extent file is missing or corrupted.
+	switch last.State {
+	case StateParityWritten, StateMetadataWritten:
+		mergeParityGroups(state, last.Extents)
+	}
+
 	rootDir := filepath.Dir(c.metadataPath)
-	if err := writeExtentFiles(rootDir, last.Extents); err != nil {
-		return fmt.Errorf("restore extent files during recovery: %w", err)
+
+	// Verify that each extent file exists on disk and has the correct checksum.
+	// Unlike the original write path we must NOT overwrite existing files with
+	// synthetic data — the real payload bytes were already written before the
+	// crash and must be left untouched.
+	if err := ensureExtentFiles(rootDir, *state, last.Extents); err != nil {
+		return fmt.Errorf("ensure extent files during recovery: %w", err)
 	}
 
 	if last.State == StateDataWritten || last.State == StateReplayRequired {
@@ -115,6 +131,22 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 	}
 
 	if last.State == StateParityWritten {
+		// Re-run parity computation to ensure the checksum stored in metadata
+		// accurately reflects the current on-disk parity file. The parity file
+		// may have been written with additional extents from other committed
+		// transactions, leaving the committed metadata snapshot with a stale
+		// checksum. writeParityFiles recomputes the XOR from all current member
+		// extents, rewrites the parity file only if the checksum has changed, and
+		// updates state.ParityGroups[i].ParityChecksum in place.
+		//
+		// Optimisation: if every parity group already has the correct checksum
+		// (common for the metadata-written case where we fell through from
+		// data-written in the same recovery pass), skip the disk IO.
+		if parityChecksumStale(rootDir, *state, last.Extents) {
+			if err := writeParityFiles(rootDir, state, last.Extents); err != nil {
+				return fmt.Errorf("recompute parity during recovery: %w", err)
+			}
+		}
 		upsertTransaction(state, last, StateMetadataWritten, false, nil)
 		if _, err := c.metadata.Save(*state); err != nil {
 			return fmt.Errorf("save metadata during recovery: %w", err)
@@ -136,6 +168,42 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 		}
 	}
 
+	return nil
+}
+
+// ensureExtentFiles verifies that each extent file exists on disk and matches
+// the checksum recorded in the extent's metadata. If a file is correct it is
+// left untouched. If a file is missing or corrupted and parity data is
+// available, parity reconstruction is attempted. This function must be used
+// during crash recovery instead of writeExtentFiles so that real payload data
+// written before the crash is never overwritten with synthetic content.
+func ensureExtentFiles(rootDir string, state metadata.SampleState, extents []metadata.Extent) error {
+	for _, extent := range extents {
+		path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
+		if data, err := os.ReadFile(path); err == nil {
+			// normalizeExtentLength truncates data longer than extent.Length or
+			// zero-pads data shorter than it, ensuring a consistent byte length
+			// for checksum comparison regardless of OS-level file buffering.
+			normalized := normalizeExtentLength(data, extent.Length)
+			if extent.Checksum == "" || digestBytes(normalized) == extent.Checksum {
+				continue // file is present and correct (or has no expected checksum)
+			}
+		}
+		// File is missing or its checksum does not match.
+		if extent.Checksum == "" {
+			return fmt.Errorf("extent %s has no checksum and its file is missing or corrupt; cannot recover without original payload", extent.ExtentID)
+		}
+		rebuilt, err := reconstructExtent(rootDir, state, extent)
+		if err != nil {
+			return fmt.Errorf("extent %s file is missing or corrupt and parity reconstruction failed: %w", extent.ExtentID, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
+		}
+		if err := os.WriteFile(path, rebuilt, 0o600); err != nil {
+			return fmt.Errorf("write recovered extent %s: %w", extent.ExtentID, err)
+		}
+	}
 	return nil
 }
 
@@ -181,6 +249,41 @@ func effectiveRecoveryRecord(txRecords []Record) Record {
 		}
 	}
 	return last
+}
+
+// parityChecksumStale returns true if any parity group referenced by extents
+// has an on-disk parity file whose checksum differs from the stored metadata
+// checksum. A mismatch means the metadata is stale and writeParityFiles must
+// be called to reconcile them.
+func parityChecksumStale(rootDir string, state metadata.SampleState, extents []metadata.Extent) bool {
+	seen := make(map[string]bool)
+	for _, extent := range extents {
+		if seen[extent.ParityGroupID] {
+			continue
+		}
+		seen[extent.ParityGroupID] = true
+
+		var storedChecksum string
+		for _, group := range state.ParityGroups {
+			if group.ParityGroupID == extent.ParityGroupID {
+				storedChecksum = group.ParityChecksum
+				break
+			}
+		}
+		if storedChecksum == "" {
+			return true // group not yet in metadata
+		}
+
+		parityPath := filepath.Join(rootDir, "parity", extent.ParityGroupID+".bin")
+		data, err := os.ReadFile(parityPath)
+		if err != nil {
+			return true // file missing; must recompute
+		}
+		if digestBytes(data) != storedChecksum {
+			return true
+		}
+	}
+	return false
 }
 
 func upsertTransaction(state *metadata.SampleState, record Record, txState State, replayRequired bool, committedAt *time.Time) {

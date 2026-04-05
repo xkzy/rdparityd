@@ -258,15 +258,15 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		NewGeneration:     newGeneration,
 		ReplayRequired:    shouldStopAfter(req.FailAfter, StateMetadataWritten),
 	})
-	snapshot, err := c.commitState(state)
-	if err != nil {
-		return WriteResult{}, fmt.Errorf("save metadata snapshot: %w", err)
-	}
-	result.StateChecksum = snapshot.StateChecksum
 	if _, err := c.journal.Append(withState(baseRecord, StateMetadataWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append metadata-written record: %w", err)
 	}
 	if shouldStopAfter(req.FailAfter, StateMetadataWritten) {
+		// For crash recovery: save state snapshot before returning to ensure
+		// recovery can see the partial transaction state if needed.
+		if _, err := c.commitState(state); err != nil {
+			return WriteResult{}, fmt.Errorf("save metadata snapshot on stop: %w", err)
+		}
 		result.FinalState = StateMetadataWritten
 		result.ReplayRequired = true
 		return result, nil

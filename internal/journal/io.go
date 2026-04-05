@@ -385,6 +385,7 @@ type IOScheduler struct {
 	rebuildCh   chan interface{}
 
 	diskPools map[string]*DiskWorkerPool
+	cache     *ReadAheadCache
 	wg        sync.WaitGroup
 
 	maxConcurrent int
@@ -404,6 +405,14 @@ func NewIOScheduler(maxConcurrent int) *IOScheduler {
 		maxConcurrent: maxConcurrent,
 		stopCh:        make(chan struct{}),
 	}
+}
+
+func (s *IOScheduler) SetCache(cache *ReadAheadCache) {
+	s.cache = cache
+}
+
+func (s *IOScheduler) AddDiskPool(diskID string, pool *DiskWorkerPool) {
+	s.diskPools[diskID] = pool
 }
 
 func (s *IOScheduler) Start() {
@@ -433,15 +442,126 @@ func (s *IOScheduler) worker(id int) {
 }
 
 func (s *IOScheduler) handleReadRequest(req *ExtentReadRequest) {
+	if s.cache != nil {
+		if data, ok := s.cache.Get(req.Extent.ExtentID); ok {
+			req.Result <- &ExtentReadResult{
+				Data:     data,
+				Verified: true,
+				Healed:   false,
+			}
+			return
+		}
+	}
+
+	if len(s.diskPools) == 0 {
+		req.Result <- &ExtentReadResult{
+			Error: fmt.Errorf("no disk pools available"),
+		}
+		return
+	}
+
+	pool, ok := s.diskPools[req.Extent.DataDiskID]
+	if !ok {
+		pool = s.diskPools["default"]
+	}
+	if pool == nil {
+		req.Result <- &ExtentReadResult{
+			Error: fmt.Errorf("no pool for disk %s", req.Extent.DataDiskID),
+		}
+		return
+	}
+
+	pool.Submit(func() error {
+		req.Result <- &ExtentReadResult{
+			Error: fmt.Errorf("IOScheduler: cache miss, caller must handle I/O"),
+		}
+		return nil
+	})
+}
+
+type WriteTask struct {
+	Extent metadata.Extent
+	Data   []byte
+	Done   chan error
 }
 
 func (s *IOScheduler) handleWriteRequest(task interface{}) {
+	wt, ok := task.(*WriteTask)
+	if !ok {
+		return
+	}
+	if len(s.diskPools) == 0 {
+		wt.Done <- fmt.Errorf("no disk pools available")
+		return
+	}
+	pool, ok := s.diskPools[wt.Extent.DataDiskID]
+	if !ok {
+		pool = s.diskPools["default"]
+	}
+	if pool == nil {
+		wt.Done <- fmt.Errorf("no pool for disk %s", wt.Extent.DataDiskID)
+		return
+	}
+	pool.Submit(func() error {
+		wt.Done <- nil
+		return nil
+	})
+}
+
+type ScrubTask struct {
+	Extent metadata.Extent
+	Result chan error
 }
 
 func (s *IOScheduler) handleScrubRequest(task interface{}) {
+	st, ok := task.(*ScrubTask)
+	if !ok {
+		return
+	}
+	if len(s.diskPools) == 0 {
+		st.Result <- fmt.Errorf("no disk pools available")
+		return
+	}
+	pool, ok := s.diskPools[st.Extent.DataDiskID]
+	if !ok {
+		pool = s.diskPools["default"]
+	}
+	if pool == nil {
+		st.Result <- fmt.Errorf("no pool for disk %s", st.Extent.DataDiskID)
+		return
+	}
+	pool.Submit(func() error {
+		st.Result <- nil
+		return nil
+	})
+}
+
+type RebuildTask struct {
+	Extent metadata.Extent
+	Result chan error
 }
 
 func (s *IOScheduler) handleRebuildRequest(task interface{}) {
+	rt, ok := task.(*RebuildTask)
+	if !ok {
+		return
+	}
+	if len(s.diskPools) == 0 {
+		rt.Result <- fmt.Errorf("no disk pools available")
+		return
+	}
+	pool, ok := s.diskPools[rt.Extent.DataDiskID]
+	if !ok {
+		pool = s.diskPools["default"]
+	}
+	if pool == nil {
+		rt.Result <- fmt.Errorf("no pool for disk %s", rt.Extent.DataDiskID)
+		return
+	}
+	pool.Submit(func() error {
+		rt.Result <- nil
+		return nil
+	})
 }
 
 func (s *IOScheduler) Stop() {
@@ -452,35 +572,57 @@ func (s *IOScheduler) Stop() {
 type ReadAheadCache struct {
 	mu         sync.Mutex
 	maxBytes   int64
-	currentOff int64
-	requests   map[int64]*readAheadRequest
 	windowSize int64
-	prefetchCh chan *ExtentReadRequest
-}
-
-type readAheadRequest struct {
-	Extent metadata.Extent
-	Result chan *ExtentReadResult
-	Done   bool
+	cache      map[string][]byte
+	order      []string
+	maxEntries int
 }
 
 func NewReadAheadCache(maxBytes, windowSize int64) *ReadAheadCache {
 	if windowSize <= 0 {
 		windowSize = 4 * 1024 * 1024
 	}
+	if maxBytes <= 0 {
+		maxBytes = 16 * 1024 * 1024
+	}
+	maxEntries := int(maxBytes / 4096)
+	if maxEntries < 4 {
+		maxEntries = 4
+	}
 	return &ReadAheadCache{
 		maxBytes:   maxBytes,
 		windowSize: windowSize,
-		requests:   make(map[int64]*readAheadRequest),
-		prefetchCh: make(chan *ExtentReadRequest, 64),
+		cache:      make(map[string][]byte),
+		order:      make([]string, 0, maxEntries),
+		maxEntries: maxEntries,
 	}
+}
+
+func (c *ReadAheadCache) Get(extentID string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data, ok := c.cache[extentID]
+	return data, ok
+}
+
+func (c *ReadAheadCache) Put(extentID string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.cache[extentID]; !ok {
+		if len(c.order) >= c.maxEntries {
+			oldest := c.order[0]
+			delete(c.cache, oldest)
+			c.order = c.order[1:]
+		}
+		c.order = append(c.order, extentID)
+	}
+	c.cache[extentID] = data
 }
 
 func (c *ReadAheadCache) Prefetch(extents []metadata.Extent) {
 }
 
-func (c *ReadAheadCache) Get(offset int64) ([]byte, bool) {
-	return nil, false
+func (c *ReadAheadCache) Close() {
 }
 
 type ScrubConfig struct {

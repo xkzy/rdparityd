@@ -450,7 +450,10 @@ func readRecord(r io.Reader) (Record, error) {
 		if errors.Is(err, io.EOF) {
 			return Record{}, io.EOF
 		}
-		return Record{}, io.ErrUnexpectedEOF
+		// 1-3 bytes were available — torn write on the length prefix itself.
+		// Propagate io.ErrUnexpectedEOF directly so Load() can identify it as
+		// a safe tail truncation, and return any other I/O error unchanged.
+		return Record{}, err
 	}
 	if totalLen < recordHeaderSize {
 		return Record{}, io.ErrUnexpectedEOF
@@ -458,7 +461,9 @@ func readRecord(r io.Reader) (Record, error) {
 
 	blob := make([]byte, totalLen)
 	if _, err := io.ReadFull(r, blob); err != nil {
-		return Record{}, io.ErrUnexpectedEOF
+		// io.ErrUnexpectedEOF means a torn write (partial record at the tail).
+		// Any other error is a genuine I/O failure and is returned unchanged.
+		return Record{}, err
 	}
 
 	hdrPrefix := blob[:40]

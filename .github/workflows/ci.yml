@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Verify go.mod
+        run: go mod verify
+
+      - name: Format check
+        run: make fmt
+        continue-on-error: false
+
+      - name: Run tests
+        run: go test -v ./...
+
+      - name: Build binaries
+        run: |
+          go build -o /dev/null ./cmd/rtparityd
+          go build -o /dev/null ./cmd/rtpctl
+
+      - name: Check no JSON in internal packages
+        run: |
+          # Verify no JSON marshaling is used in persistence paths
+          if grep -r 'encoding/json' internal/journal/ internal/metadata/ internal/fusefs/ internal/parity/; then
+            echo "ERROR: encoding/json found in persistence paths"
+            exit 1
+          fi
+
+      - name: Check for deprecated JSON claims
+        run: |
+          # Check that CLAUDE.md and docs don't claim JSON is used in hot path
+          if grep -i 'JSON.*hot.*path\|JSON.*prototype\|JSON.*snapshot.*hot' README.md CLAUDE.md docs/*.md; then
+            echo "WARNING: Documentation contains JSON claims for hot path"
+          fi

@@ -21,14 +21,14 @@ type runtimeState struct {
 	// Handlers must hold mu.RLock for reads and mu.Lock for writes to
 	// Prototype and JournalSummary.
 	mu               sync.RWMutex
-	StartedAt        time.Time                    `json:"started_at"`
-	Prototype        metadata.SampleState         `json:"prototype"`
-	MetadataPath     string                       `json:"metadata_path"`
-	JournalPath      string                       `json:"journal_path"`
-	Recovery         journal.RecoveryResult       `json:"recovery"`
-	JournalSummary   journal.ReplaySummary        `json:"journal_summary"`
-	StartupError     string                       `json:"startup_error,omitempty"`
-	StartupAdmission startupAdmission            `json:"startup_admission"`
+	StartedAt        time.Time              `json:"started_at"`
+	Prototype        metadata.SampleState   `json:"prototype"`
+	MetadataPath     string                 `json:"metadata_path"`
+	JournalPath      string                 `json:"journal_path"`
+	Recovery         journal.RecoveryResult `json:"recovery"`
+	JournalSummary   journal.ReplaySummary  `json:"journal_summary"`
+	StartupError     string                 `json:"startup_error,omitempty"`
+	StartupAdmission startupAdmission       `json:"startup_admission"`
 }
 
 // startupAdmission is the centralized startup/open decision for the daemon.

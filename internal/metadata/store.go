@@ -116,25 +116,19 @@ func (s *Store) Save(state SampleState) (SnapshotEnvelope, error) {
 	// Fsync the parent directory so the renamed directory entry is durable.
 	// Without this step a crash after Rename but before the kernel flushes the
 	// directory block could leave the old snapshot visible again.
-	if err := syncDir(filepath.Dir(s.path)); err != nil {
-		return SnapshotEnvelope{}, fmt.Errorf("sync metadata directory: %w", err)
+	metaDir, err := os.Open(filepath.Dir(s.path))
+	if err != nil {
+		return SnapshotEnvelope{}, fmt.Errorf("open metadata directory for sync: %w", err)
+	}
+	if syncErr := metaDir.Sync(); syncErr != nil {
+		metaDir.Close()
+		return SnapshotEnvelope{}, fmt.Errorf("sync metadata directory: %w", syncErr)
+	}
+	if closeErr := metaDir.Close(); closeErr != nil {
+		return SnapshotEnvelope{}, fmt.Errorf("close metadata directory: %w", closeErr)
 	}
 
 	return envelope, nil
-}
-
-// syncDir opens the directory at path and calls Sync() on it, ensuring that
-// any recently renamed files in the directory are durable on Linux.
-func syncDir(path string) error {
-	d, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("open directory for sync: %w", err)
-	}
-	if err := d.Sync(); err != nil {
-		d.Close()
-		return fmt.Errorf("sync directory: %w", err)
-	}
-	return d.Close()
 }
 
 func (s *Store) Load() (SampleState, error) {

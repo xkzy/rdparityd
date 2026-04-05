@@ -61,6 +61,14 @@ type Coordinator struct {
 	journalPath  string
 	metadata     *metadata.Store
 	journal      *Store
+	// writeScheduler is used for parallel extent writes. Initialized lazily.
+	// Protected by schedulerMu, separate from mu to avoid deadlocks.
+	writeScheduler *DiskScheduler
+	schedulerMu    sync.Mutex
+	// ioScheduler handles background I/O scheduling for reads/writes.
+	// Initialized lazily.
+	ioScheduler *IOScheduler
+	readCache   *ReadAheadCache
 	// cachedState holds the last successfully committed metadata state.
 	// It is populated on first use and kept up-to-date by every mutating
 	// operation (WriteFile, Recover, Scrub, Rebuild). Under the mu lock,
@@ -76,6 +84,34 @@ func NewCoordinator(metadataPath, journalPath string) *Coordinator {
 		metadata:     metadata.NewStore(metadataPath),
 		journal:      NewStore(journalPath),
 	}
+}
+
+func (c *Coordinator) getWriteScheduler() *DiskScheduler {
+	c.schedulerMu.Lock()
+	defer c.schedulerMu.Unlock()
+	if c.writeScheduler == nil {
+		c.writeScheduler = NewDiskScheduler(4, 2)
+	}
+	return c.writeScheduler
+}
+
+func (c *Coordinator) getIOScheduler() *IOScheduler {
+	c.schedulerMu.Lock()
+	defer c.schedulerMu.Unlock()
+	if c.ioScheduler == nil {
+		c.ioScheduler = NewIOScheduler(4)
+		c.ioScheduler.Start()
+	}
+	return c.ioScheduler
+}
+
+func (c *Coordinator) getReadCache() *ReadAheadCache {
+	c.schedulerMu.Lock()
+	defer c.schedulerMu.Unlock()
+	if c.readCache == nil {
+		c.readCache = NewReadAheadCache(16*1024*1024, 4*1024*1024)
+	}
+	return c.readCache
 }
 
 // loadState returns the current metadata state. It uses the in-memory cache
@@ -348,6 +384,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if compAlg == CompressionNone {
 		applyExtentChecksums(&state, extents, req.Payload)
 	}
+
 	if err := writeExtentFilesWithCompression(filepath.Dir(c.metadataPath), extents, req.Payload, compAlg, req.extentWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
 	}
@@ -577,6 +614,7 @@ func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte,
 
 // writeExtentFilesWithCompression writes each extent's data to disk with optional compression.
 // If CompressionAlg is not CompressionNone, the extent data is compressed before writing.
+// For mirrored extents, a copy is also written to the mirror disk.
 func writeExtentFilesWithCompression(rootDir string, extents []metadata.Extent, payload []byte, compAlg CompressionAlg, limit int) error {
 	written := 0
 	for _, extent := range extents {
@@ -590,8 +628,6 @@ func writeExtentFilesWithCompression(rootDir string, extents []metadata.Extent, 
 
 		var intended []byte
 		if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
-			// Extent is already compressed with the data stored in CompressedSize
-			// and checksum computed on compressed data. Read the compressed data.
 			originalData := extentData(extent, payload)
 			compressedData, err := compress(originalData, CompressionAlg(extent.CompressionAlg))
 			if err != nil {
@@ -610,7 +646,47 @@ func writeExtentFilesWithCompression(rootDir string, extents []metadata.Extent, 
 				return fmt.Errorf("I3: post-write readback failed for %s: %w", extent.ExtentID, err)
 			}
 		}
+
+		if extent.ProtectionClass == metadata.ExtentMirrored && extent.MirrorDiskID != "" {
+			mirrorPath := writeMirrorRelativePath(rootDir, extent.PhysicalLocator.RelativePath, extent.MirrorDiskID)
+			if err := replaceSyncFile(mirrorPath, intended, 0o600); err != nil {
+				return fmt.Errorf("write mirror extent file %s: %w", mirrorPath, err)
+			}
+			if extent.MirrorChecksum != "" {
+				if err := verifyOnDiskMirrorExtentBytes(mirrorPath, extent); err != nil {
+					return fmt.Errorf("I3: post-write mirror readback failed for %s: %w", extent.ExtentID, err)
+				}
+			}
+		}
+
 		written++
+	}
+	return nil
+}
+
+// writeMirrorRelativePath computes the mirror copy path for an extent.
+func writeMirrorRelativePath(rootDir, primaryPath, mirrorDiskID string) string {
+	dir := filepath.Dir(primaryPath)
+	ext := filepath.Ext(primaryPath)
+	base := filepath.Base(primaryPath)
+	mirrorDir := filepath.Join(rootDir, "mirror", mirrorDiskID, dir)
+	return filepath.Join(mirrorDir, base+".mirror"+ext)
+}
+
+// verifyOnDiskMirrorExtentBytes verifies the mirror extent data on disk.
+func verifyOnDiskMirrorExtentBytes(path string, extent metadata.Extent) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if extent.CompressedSize > 0 && int64(len(data)) != extent.CompressedSize {
+		return fmt.Errorf("mirror compressed length mismatch: committed_compressed=%d disk=%d", extent.CompressedSize, len(data))
+	}
+	if extent.MirrorChecksum != "" && digestBytes(data) != extent.MirrorChecksum {
+		return fmt.Errorf("mirror checksum mismatch: expected=%s got=%s", extent.MirrorChecksum, digestBytes(data))
+	}
+	if extent.MirrorChecksum == "" && extent.Checksum != "" && digestBytes(data) != extent.Checksum {
+		return fmt.Errorf("mirror checksum mismatch: expected=%s got=%s", extent.Checksum, digestBytes(data))
 	}
 	return nil
 }

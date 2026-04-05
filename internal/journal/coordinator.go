@@ -130,6 +130,44 @@ func (c *Coordinator) ensureRecoveredLocked(fallbackPoolName string) error {
 	return nil
 }
 
+// saveStateSnapshot persists state to disk without updating the in-memory cache.
+// This allows metadata to be durable BEFORE the committed journal record is appended,
+// which is required for invariant I1.
+//
+// Must be called with c.mu held.
+func (c *Coordinator) saveStateSnapshot(state metadata.SampleState) (metadata.SnapshotEnvelope, error) {
+	if vs := checkPreCommitInvariants(state); len(vs) > 0 {
+		return metadata.SnapshotEnvelope{}, fmt.Errorf(
+			"I5: refusing to save state with %d invariant violation(s): %v",
+			len(vs), vs[0],
+		)
+	}
+	newGen := int64(len(state.Transactions))
+	if c.cachedStateSet {
+		cachedGen := int64(len(c.cachedState.Transactions))
+		if newGen < cachedGen {
+			return metadata.SnapshotEnvelope{}, fmt.Errorf(
+				"I11: refusing non-monotonic generation: cached=%d new=%d",
+				cachedGen, newGen,
+			)
+		}
+	}
+	return c.metadata.Save(state)
+}
+
+// publishCommittedState updates the in-memory cache with the committed state.
+// This must be called AFTER the committed journal record is durable.
+// Before calling this, the caller must ensure:
+//   - metadata snapshot is durable (saveStateSnapshot)
+//   - committed journal record is durable (journal.Append with StateCommitted)
+//
+// Must be called with c.mu held.
+func (c *Coordinator) publishCommittedState(state metadata.SampleState) {
+	c.cachedState = &state
+	c.cachedStateSet = true
+	_ = c.journal.CompactIfClean()
+}
+
 // commitState saves state to disk and updates the in-memory cache.
 // Must be called with c.mu held.
 // commitState persists state to metadata and updates the in-memory cache.
@@ -173,11 +211,6 @@ func (c *Coordinator) commitState(state metadata.SampleState) (metadata.Snapshot
 	}
 	c.cachedState = &state
 	c.cachedStateSet = true
-
-	// Compact the journal when all transactions are in a terminal state.
-	// This is a best-effort, non-fatal operation: a compaction failure never
-	// risks data loss because the metadata snapshot is already durable.
-	_ = c.journal.CompactIfClean()
 
 	return env, nil
 }
@@ -368,13 +401,26 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	}
 
 	committedAt := time.Now().UTC()
+
+	// 1. Mark transaction committed in the state that will be snapshotted.
+	upsertTransaction(&state, baseRecord, StateCommitted, false, &committedAt)
+
+	// 2. Persist metadata first, but do NOT publish cachedState yet.
+	// This ensures metadata is durable BEFORE the committed record is appended,
+	// satisfying invariant I1.
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return WriteResult{}, fmt.Errorf("save committed metadata snapshot: %w", err)
+	}
+
+	// 3. Only after durable metadata exists, append the committed journal record.
 	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
 		return WriteResult{}, fmt.Errorf("append committed record: %w", err)
 	}
-	upsertTransaction(&state, baseRecord, StateCommitted, false, &committedAt)
-	if _, err := c.commitState(state); err != nil {
-		return WriteResult{}, fmt.Errorf("save committed metadata snapshot: %w", err)
-	}
+
+	// 4. Now the transaction is truly visible - publish cached state.
+	// This must happen AFTER both metadata and committed record are durable.
+	c.publishCommittedState(state)
+
 	result.FinalState = StateCommitted
 
 	// Phase 3 — Enforce invariants for the data touched by this write. The write

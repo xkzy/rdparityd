@@ -85,6 +85,80 @@ func TestJournalEndpointReturnsReplaySummary(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsEndpointReportsRecoveryState(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := journal.NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/http-diagnostics.bin",
+		SizeBytes:   4096,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	if len(writeResult.Extents) == 0 {
+		t.Fatal("expected extents")
+	}
+
+	// Mark one disk failed in metadata so operator diagnostics can surface it.
+	if err := coordinator.FailDisk(writeResult.Extents[0].DataDiskID); err != nil {
+		t.Fatalf("FailDisk returned error: %v", err)
+	}
+
+	// Corrupt one parity file so parity mismatch state is surfaced clearly.
+	state, err := coordinator.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta returned error: %v", err)
+	}
+	if len(state.ParityGroups) == 0 {
+		t.Fatal("expected parity groups")
+	}
+	parityPath := filepath.Join(filepath.Dir(metadataPath), "parity", state.ParityGroups[0].ParityGroupID+".bin")
+	parityBytes, err := os.ReadFile(parityPath)
+	if err != nil {
+		t.Fatalf("Read parity file returned error: %v", err)
+	}
+	parityBytes[0] ^= 0xff
+	if err := os.WriteFile(parityPath, parityBytes, 0o600); err != nil {
+		t.Fatalf("Corrupt parity write returned error: %v", err)
+	}
+
+	stateRT := loadRuntimeState("demo", journalPath, metadataPath)
+	// Explicitly inject an interrupted transaction summary to prove the handler
+	// surfaces it directly instead of requiring log inspection.
+	stateRT.JournalSummary.RequiresReplay = true
+	stateRT.JournalSummary.IncompleteTxIDs = []string{"tx-interrupted"}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/diagnostics", nil)
+	rr := httptest.NewRecorder()
+	newMux(&stateRT).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if body["journal_state"] != "dirty" {
+		t.Fatalf("expected journal_state=dirty, got %#v", body["journal_state"])
+	}
+	if body["parity_mismatch_state"] != true {
+		t.Fatalf("expected parity_mismatch_state=true, got %#v", body["parity_mismatch_state"])
+	}
+	failedDisks, ok := body["failed_disks"].([]any)
+	if !ok || len(failedDisks) == 0 {
+		t.Fatalf("expected failed_disks to be non-empty, got %#v", body["failed_disks"])
+	}
+	interrupted, ok := body["interrupted_transactions"].([]any)
+	if !ok || len(interrupted) != 1 || interrupted[0] != "tx-interrupted" {
+		t.Fatalf("expected interrupted transaction diagnostics, got %#v", body["interrupted_transactions"])
+	}
+}
+
 func TestReadEndpointReturnsVerificationResult(t *testing.T) {
 	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
 	journalPath := filepath.Join(t.TempDir(), "journal.log")

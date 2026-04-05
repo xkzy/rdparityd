@@ -15,8 +15,16 @@ import (
 // layer to enumerate files and directories without needing to go through the
 // full coordinator write path.
 func (c *Coordinator) ReadMeta() (metadata.SampleState, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return metadata.SampleState{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return metadata.SampleState{}, err
+	}
 	if c.cachedStateSet {
 		return *c.cachedState, nil
 	}
@@ -32,19 +40,27 @@ func (c *Coordinator) ReadMeta() (metadata.SampleState, error) {
 
 // PoolName returns the pool name from the current metadata state, or "demo" if
 // no metadata has been written yet.
-func (c *Coordinator) PoolName() string {
+func (c *Coordinator) PoolName() (string, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return "", err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return "", err
+	}
 	if c.cachedStateSet {
 		if c.cachedState.Pool.Name != "" {
-			return c.cachedState.Pool.Name
+			return c.cachedState.Pool.Name, nil
 		}
 	}
 	state, err := c.metadata.Load()
 	if err != nil || state.Pool.Name == "" {
-		return "demo"
+		return "demo", nil
 	}
-	return state.Pool.Name
+	return state.Pool.Name, nil
 }
 
 // RootDir returns the directory that hosts extent and parity files — the same
@@ -63,6 +79,11 @@ type ReadResult struct {
 }
 
 func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return ReadResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.readFileWithRepairFailAfter(logicalPath, "")
@@ -76,8 +97,19 @@ func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter 
 		return ReadResult{}, fmt.Errorf("logical path is required")
 	}
 
-	var state metadata.SampleState
-	var err error
+	// A read must never serve stale metadata while replayable journal state is
+	// pending. Otherwise a just-crashed but recoverable write can appear as
+	// missing or partially visible even though recovery can deterministically
+	// complete it. Reads therefore force recovery before lookup when replay is
+	// required, mirroring the pre-write recovery guard.
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return ReadResult{}, err
+	}
+
+	var (
+		state metadata.SampleState
+		err   error
+	)
 	if c.cachedStateSet {
 		state = *c.cachedState
 	} else {
@@ -193,18 +225,30 @@ func reconstructExtent(rootDir string, state metadata.SampleState, target metada
 		return nil, fmt.Errorf("read parity file: %w", err)
 	}
 
+	memberSet := make(map[string]bool)
 	for _, group := range state.ParityGroups {
-		if group.ParityGroupID == target.ParityGroupID && group.ParityChecksum != "" {
-			if digestBytes(parityData) != group.ParityChecksum {
-				return nil, fmt.Errorf("parity checksum mismatch for group %s", group.ParityGroupID)
-			}
-			break
+		if group.ParityGroupID != target.ParityGroupID {
+			continue
 		}
+		if group.ParityChecksum != "" && digestBytes(parityData) != group.ParityChecksum {
+			return nil, fmt.Errorf("parity checksum mismatch for group %s", group.ParityGroupID)
+		}
+		for _, memberID := range group.MemberExtentIDs {
+			memberSet[memberID] = true
+		}
+		break
 	}
 
 	rebuilt := append([]byte(nil), parityData...)
 	for _, extent := range state.Extents {
-		if extent.ParityGroupID != target.ParityGroupID || extent.ExtentID == target.ExtentID {
+		if extent.ExtentID == target.ExtentID {
+			continue
+		}
+		if len(memberSet) > 0 {
+			if !memberSet[extent.ExtentID] {
+				continue
+			}
+		} else if extent.ParityGroupID != target.ParityGroupID {
 			continue
 		}
 		memberPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)

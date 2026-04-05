@@ -10,7 +10,10 @@ func TestPoolNameReturnsDemoWhenNoMetadata(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	name := coord.PoolName()
+	name, err := coord.PoolName()
+	if err != nil {
+		t.Fatalf("PoolName returned error: %v", err)
+	}
 	if name != "demo" {
 		t.Fatalf("expected %q, got %q", "demo", name)
 	}
@@ -30,7 +33,10 @@ func TestPoolNameReturnsPoolNameAfterWrite(t *testing.T) {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	name := coord.PoolName()
+	name, err := coord.PoolName()
+	if err != nil {
+		t.Fatalf("PoolName returned error: %v", err)
+	}
 	if name != "mypool" {
 		t.Fatalf("expected %q, got %q", "mypool", name)
 	}

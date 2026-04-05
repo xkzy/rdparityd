@@ -1,0 +1,235 @@
+=== RUN   TestB1_CorruptMagicBytesDetected
+    category_b_corruption_test.go:90: B1: File readable after magic corruption recovery
+--- PASS: TestB1_CorruptMagicBytesDetected (0.05s)
+=== RUN   TestB2_CorruptTxIDDetected
+    category_b_corruption_test.go:132: B2 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+--- PASS: TestB2_CorruptTxIDDetected (0.05s)
+=== RUN   TestB3_CorruptCommitRecordState
+    category_b_corruption_test.go:186: B3 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+--- PASS: TestB3_CorruptCommitRecordState (0.05s)
+=== RUN   TestB4_InvalidChecksumDetected
+    category_b_corruption_test.go:232: B4 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+--- PASS: TestB4_InvalidChecksumDetected (0.04s)
+=== RUN   TestB5_StaleGenerationDetected
+    category_b_corruption_test.go:284: B5 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357846878613913 LastAbortedTx:}}, err: <nil>
+--- PASS: TestB5_StaleGenerationDetected (0.05s)
+=== RUN   TestB6_DuplicateTransactionHandled
+    category_b_corruption_test.go:334: B6 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357846925508092 LastAbortedTx:}}, err: <nil>
+--- PASS: TestB6_DuplicateTransactionHandled (0.44s)
+=== RUN   TestB7_JournalTailGarbageIgnored
+    category_b_corruption_test.go:391: B7 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357847367418029 LastAbortedTx:}}, err: <nil>
+--- PASS: TestB7_JournalTailGarbageIgnored (0.05s)
+=== RUN   TestB8_ReorderedRecordsDetected
+    category_b_corruption_test.go:432: B8: No invariant violations in current record sequence (correct behavior)
+    category_b_corruption_test.go:439: B8 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357847415171604 LastAbortedTx:}}, err: <nil>
+--- PASS: TestB8_ReorderedRecordsDetected (0.05s)
+=== RUN   TestB9_RemoveCommitMarkerCausesAbort
+    category_b_corruption_test.go:480: B9 Recovery result: {AttemptedTxIDs:[tx-write-1775357847461831331] RecoveredTxIDs:[tx-write-1775357847461831331] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: replay after recovery: decode journal record: journal record BLAKE3 hash mismatch
+    category_b_corruption_test.go:491: B9: Transaction not explicitly aborted; may be lost or in partial state
+    category_b_corruption_test.go:503: B9: WARNING - file has new data despite commit marker removal. May indicate recovery issue.
+--- PASS: TestB9_RemoveCommitMarkerCausesAbort (0.05s)
+=== RUN   TestB10_TruncatedJournalPartialFsync
+    category_b_corruption_test.go:556: B10 Recovery result: {AttemptedTxIDs:[tx-write-1775357847509393335] RecoveredTxIDs:[tx-write-1775357847509393335] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: replay after recovery: decode journal record: journal record BLAKE3 hash mismatch
+    category_b_corruption_test.go:562: B10: Replay error (may be acceptable for torn record): decode journal record: journal record BLAKE3 hash mismatch
+--- PASS: TestB10_TruncatedJournalPartialFsync (0.05s)
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B1_CorruptMagicBytes
+    category_b_corruption_test.go:90: B1: File readable after magic corruption recovery
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B2_CorruptTxID
+    category_b_corruption_test.go:132: B2 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B3_CorruptCommitRecord
+    category_b_corruption_test.go:186: B3 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B4_InvalidChecksum
+    category_b_corruption_test.go:232: B4 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: load journal for recovery: decode journal record: journal record BLAKE3 hash mismatch
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B5_StaleGeneration
+    category_b_corruption_test.go:284: B5 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357847747131440 LastAbortedTx:}}, err: <nil>
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B6_DuplicateTransaction
+    category_b_corruption_test.go:334: B6 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357847794825873 LastAbortedTx:}}, err: <nil>
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B7_JournalTailGarbage
+    category_b_corruption_test.go:391: B7 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357848452971562 LastAbortedTx:}}, err: <nil>
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B8_ReorderedRecords
+    category_b_corruption_test.go:432: B8: No invariant violations in current record sequence (correct behavior)
+    category_b_corruption_test.go:439: B8 Recovery result: {AttemptedTxIDs:[] RecoveredTxIDs:[] AbortedTxIDs:[] FinalSummary:{TotalRecords:5 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx:tx-write-1775357848499091074 LastAbortedTx:}}, err: <nil>
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B9_RemoveCommitMarker
+    category_b_corruption_test.go:480: B9 Recovery result: {AttemptedTxIDs:[tx-write-1775357848544446370] RecoveredTxIDs:[tx-write-1775357848544446370] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: replay after recovery: decode journal record: journal record BLAKE3 hash mismatch
+    category_b_corruption_test.go:491: B9: Transaction not explicitly aborted; may be lost or in partial state
+    category_b_corruption_test.go:503: B9: WARNING - file has new data despite commit marker removal. May indicate recovery issue.
+=== RUN   TestCategoryB_AllCorruptionsHandledSafely/B10_TruncatedJournal
+    category_b_corruption_test.go:556: B10 Recovery result: {AttemptedTxIDs:[tx-write-1775357848590975783] RecoveredTxIDs:[tx-write-1775357848590975783] AbortedTxIDs:[] FinalSummary:{TotalRecords:0 RequiresReplay:false IncompleteTxIDs:[] Actions:[] LastCommittedTx: LastAbortedTx:}}, err: replay after recovery: decode journal record: journal record BLAKE3 hash mismatch
+    category_b_corruption_test.go:562: B10: Replay error (may be acceptable for torn record): decode journal record: journal record BLAKE3 hash mismatch
+--- PASS: TestCategoryB_AllCorruptionsHandledSafely (1.08s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B1_CorruptMagicBytes (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B2_CorruptTxID (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B3_CorruptCommitRecord (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B4_InvalidChecksum (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B5_StaleGeneration (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B6_DuplicateTransaction (0.66s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B7_JournalTailGarbage (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B8_ReorderedRecords (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B9_RemoveCommitMarker (0.05s)
+    --- PASS: TestCategoryB_AllCorruptionsHandledSafely/B10_TruncatedJournal (0.05s)
+=== RUN   TestCategoryF_FullScrubHealthyPool
+    category_f_full_scrub_test.go:33: Category F not yet implemented: comprehensive scrub baseline test
+--- SKIP: TestCategoryF_FullScrubHealthyPool (0.00s)
+=== RUN   TestCategoryF_ScrubDetectsMultipleCorruptedExtents
+    category_f_full_scrub_test.go:75: Category F not yet implemented: multi-extent corruption detection accuracy
+--- SKIP: TestCategoryF_ScrubDetectsMultipleCorruptedExtents (0.00s)
+=== RUN   TestCategoryF_ScrubRepairsAllDetectedCorruptions
+    category_f_full_scrub_test.go:117: Category F not yet implemented: complete repair of multiple corrupted extents
+--- SKIP: TestCategoryF_ScrubRepairsAllDetectedCorruptions (0.00s)
+=== RUN   TestCategoryF_ScrubInterruptionAndResumption
+    category_f_full_scrub_test.go:158: Category F not yet implemented: scrub checkpoint/resumption not yet designed
+--- SKIP: TestCategoryF_ScrubInterruptionAndResumption (0.00s)
+=== RUN   TestCategoryF_ScrubWithAuditOnlyMode
+    category_f_full_scrub_test.go:200: Category F not yet implemented: audit-only mode behavior verification
+--- SKIP: TestCategoryF_ScrubWithAuditOnlyMode (0.00s)
+=== RUN   TestCategoryF_ScrubPersistsHistoryAndStats
+    category_f_full_scrub_test.go:240: Category F not yet implemented: scrub history persistence design
+--- SKIP: TestCategoryF_ScrubPersistsHistoryAndStats (0.00s)
+=== RUN   TestCategoryF_ScrubDetectsPartialFileCorruption
+    category_f_full_scrub_test.go:282: Category F not yet implemented: partial file corruption detection
+--- SKIP: TestCategoryF_ScrubDetectsPartialFileCorruption (0.00s)
+=== RUN   TestCategoryF_ScrubAcrossMultiplePoolsIsolated
+    category_f_full_scrub_test.go:324: Category F not yet implemented: multi-pool scrub isolation verification
+--- SKIP: TestCategoryF_ScrubAcrossMultiplePoolsIsolated (0.00s)
+=== RUN   TestCategoryF_ScrubProgressReporting
+    category_f_full_scrub_test.go:364: Category F not yet implemented: scrub progress tracking design
+--- SKIP: TestCategoryF_ScrubProgressReporting (0.00s)
+=== RUN   TestCategoryF_ScrubRepairDoesntCorruptHealthyExtents
+    category_f_full_scrub_test.go:406: Category F not yet implemented: repair safety verification (no inadvertent corruption)
+--- SKIP: TestCategoryF_ScrubRepairDoesntCorruptHealthyExtents (0.00s)
+=== RUN   TestCategoryH_ConcurrentWritesToDifferentFiles
+    category_h_concurrency_test.go:33: Category H not yet implemented: concurrent writes baseline test
+--- SKIP: TestCategoryH_ConcurrentWritesToDifferentFiles (0.00s)
+=== RUN   TestCategoryH_ConcurrentReadsWhileWriting
+    category_h_concurrency_test.go:71: Category H not yet implemented: read-write consistency during concurrent ops
+--- SKIP: TestCategoryH_ConcurrentReadsWhileWriting (0.00s)
+=== RUN   TestCategoryH_ConcurrentWriteToSameFile
+    category_h_concurrency_test.go:112: Category H not yet implemented: same-file write conflict detection
+--- SKIP: TestCategoryH_ConcurrentWriteToSameFile (0.00s)
+=== RUN   TestCategoryH_WriteAndRepairRaceCondition
+    category_h_concurrency_test.go:154: Category H not yet implemented: write-repair race condition handling
+--- SKIP: TestCategoryH_WriteAndRepairRaceCondition (0.00s)
+=== RUN   TestCategoryH_ConcurrentScrubAndWrite
+    category_h_concurrency_test.go:197: Category H not yet implemented: scrub-write concurrency handling
+--- SKIP: TestCategoryH_ConcurrentScrubAndWrite (0.00s)
+=== RUN   TestCategoryH_MultipleRepairsOfDifferentExtents
+    category_h_concurrency_test.go:237: Category H not yet implemented: parallel extent repair safety
+--- SKIP: TestCategoryH_MultipleRepairsOfDifferentExtents (0.00s)
+=== RUN   TestCategoryH_RaceFredomMetadataUpdates
+    category_h_concurrency_test.go:278: Category H not yet implemented: concurrent metadata update atomicity
+--- SKIP: TestCategoryH_RaceFredomMetadataUpdates (0.00s)
+=== RUN   TestCategoryH_ConcurrentJournalReplay
+    category_h_concurrency_test.go:320: Category H not yet implemented: journal replay serialization with concurrent ops
+--- SKIP: TestCategoryH_ConcurrentJournalReplay (0.00s)
+=== RUN   TestCategoryH_HighConcurrencyStressTest
+    category_h_concurrency_test.go:363: Category H not yet implemented: high-load concurrency stress test
+--- SKIP: TestCategoryH_HighConcurrencyStressTest (0.00s)
+=== RUN   TestCategoryH_DeadlockFredomInLockingHierarchy
+    category_h_concurrency_test.go:405: Category H not yet implemented: deadlock-freedom verification with lock order analysis
+--- SKIP: TestCategoryH_DeadlockFredomInLockingHierarchy (0.00s)
+=== RUN   TestD1_DataDiskMissingAtStartup
+--- PASS: TestD1_DataDiskMissingAtStartup (0.07s)
+=== RUN   TestD2_DataDiskDisappearsAfterWrite
+    disk_failure_test.go:136: Expected read to fail when extent is missing
+--- FAIL: TestD2_DataDiskDisappearsAfterWrite (0.05s)
+=== RUN   TestD3_DataDiskDisappearsBeforeSecondWrite
+--- PASS: TestD3_DataDiskDisappearsBeforeSecondWrite (0.04s)
+=== RUN   TestD4_ParityDiskMissing
+    disk_failure_test.go:268: Expected unrecoverable extents when parity disk fails
+--- FAIL: TestD4_ParityDiskMissing (0.08s)
+=== RUN   TestD5_ParityDiskDisappearsAfterFirstWrite
+    disk_failure_test.go:331: Expected 1 failed disk (parity), got 0
+--- FAIL: TestD5_ParityDiskDisappearsAfterFirstWrite (0.10s)
+=== RUN   TestD6_ReplacementDiskScenario
+--- PASS: TestD6_ReplacementDiskScenario (0.07s)
+=== RUN   TestD7_ReplacementDiskPartialRebuild
+--- PASS: TestD7_ReplacementDiskPartialRebuild (0.11s)
+=== RUN   TestA1_EmptyJournalNoPrepareRecord
+    failure_matrix_test.go:135: metadata.Load: read metadata snapshot: open /tmp/TestA1_EmptyJournalNoPrepareRecord868134760/001/metadata.json: no such file or directory
+--- FAIL: TestA1_EmptyJournalNoPrepareRecord (0.00s)
+=== RUN   TestA2_CrashAfterPrepareSmallPayload
+--- PASS: TestA2_CrashAfterPrepareSmallPayload (0.00s)
+=== RUN   TestA3_CrashAfterPrepareMultiExtent
+--- PASS: TestA3_CrashAfterPrepareMultiExtent (0.00s)
+=== RUN   TestA4_CrashMidDataWriteExtentLimit1
+--- PASS: TestA4_CrashMidDataWriteExtentLimit1 (0.01s)
+=== RUN   TestA6_CrashAfterDataWritten
+--- PASS: TestA6_CrashAfterDataWritten (0.05s)
+=== RUN   TestA7_CrashMidParityWriteParityLimit1
+    failure_matrix_test.go:298: writeResult.FinalState: 
+--- PASS: TestA7_CrashMidParityWriteParityLimit1 (0.11s)
+=== RUN   TestA9_StateTransitionPreparedToDataWritten
+--- PASS: TestA9_StateTransitionPreparedToDataWritten (0.05s)
+=== RUN   TestA10_StateTransitionDataWrittenToParityWritten
+--- PASS: TestA10_StateTransitionDataWrittenToParityWritten (0.06s)
+=== RUN   TestA11_StateTransitionParityWrittenToMetadataWritten
+--- PASS: TestA11_StateTransitionParityWrittenToMetadataWritten (0.05s)
+=== RUN   TestA12_StateTransitionMetadataWrittenToCommitted
+--- PASS: TestA12_StateTransitionMetadataWrittenToCommitted (0.06s)
+=== RUN   TestA13_CrashAfterParityMetadataIntegrity
+--- PASS: TestA13_CrashAfterParityMetadataIntegrity (0.08s)
+=== RUN   TestA14_CrashAfterMetadataDataIntegrity
+--- PASS: TestA14_CrashAfterMetadataDataIntegrity (0.05s)
+=== RUN   TestAllCategoryACrashPoints
+=== RUN   TestAllCategoryACrashPoints/A2-prepared-512b
+=== PAUSE TestAllCategoryACrashPoints/A2-prepared-512b
+=== RUN   TestAllCategoryACrashPoints/A3-prepared-1mib
+=== PAUSE TestAllCategoryACrashPoints/A3-prepared-1mib
+=== RUN   TestAllCategoryACrashPoints/A6-data-written-512b
+=== PAUSE TestAllCategoryACrashPoints/A6-data-written-512b
+=== RUN   TestAllCategoryACrashPoints/A6-data-written-1mib
+=== PAUSE TestAllCategoryACrashPoints/A6-data-written-1mib
+=== RUN   TestAllCategoryACrashPoints/A6-data-written-2mib
+=== PAUSE TestAllCategoryACrashPoints/A6-data-written-2mib
+=== CONT  TestAllCategoryACrashPoints/A3-prepared-1mib
+=== CONT  TestAllCategoryACrashPoints/A6-data-written-1mib
+=== CONT  TestAllCategoryACrashPoints/A6-data-written-512b
+=== CONT  TestAllCategoryACrashPoints/A2-prepared-512b
+=== CONT  TestAllCategoryACrashPoints/A6-data-written-2mib
+--- PASS: TestAllCategoryACrashPoints (0.00s)
+    --- PASS: TestAllCategoryACrashPoints/A2-prepared-512b (0.00s)
+    --- PASS: TestAllCategoryACrashPoints/A6-data-written-512b (0.00s)
+    --- PASS: TestAllCategoryACrashPoints/A3-prepared-1mib (0.01s)
+    --- PASS: TestAllCategoryACrashPoints/A6-data-written-1mib (0.06s)
+    --- PASS: TestAllCategoryACrashPoints/A6-data-written-2mib (0.10s)
+=== RUN   TestA_RecoveryIdempotentAfterCrash
+    failure_matrix_test.go:652: recovered tx counts differ: first=1 second=0
+--- FAIL: TestA_RecoveryIdempotentAfterCrash (0.03s)
+=== RUN   TestA_MultipleCrashedWritesRecoveredTogether
+--- PASS: TestA_MultipleCrashedWritesRecoveredTogether (0.15s)
+=== RUN   TestG1_TornHeader
+    metadata_failures_test.go:74: Recover failed: recover tx-g1-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG1_TornHeader (0.00s)
+=== RUN   TestG2_InvalidStateChecksum
+    metadata_failures_test.go:140: Recover failed: recover tx-g2-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG2_InvalidStateChecksum (0.00s)
+=== RUN   TestG3_GenerationRollback
+    metadata_failures_test.go:200: Recover failed: recover tx-g3-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG3_GenerationRollback (0.00s)
+=== RUN   TestG4_ReferencesNonexistentExtent
+    metadata_failures_test.go:265: Recover failed: recover tx-g4-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG4_ReferencesNonexistentExtent (0.00s)
+=== RUN   TestG5_ReferencesUncommittedExtent
+    metadata_failures_test.go:322: Recover failed: unrecoverable multi-disk failure detected: UNRECOVERABLE DATA LOSS: 1 extents on failed disks cannot be reconstructed. Multiple disks in the same parity group have failed. Restore from backup or rebuild with additional parity.
+--- FAIL: TestG5_ReferencesUncommittedExtent (0.00s)
+=== RUN   TestG6_CheckpointWrittenButNotDurable
+    metadata_failures_test.go:376: Recover failed: recover tx-g6-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG6_CheckpointWrittenButNotDurable (0.00s)
+=== RUN   TestG7_CorruptedIndex
+    metadata_failures_test.go:436: Recover failed: recover tx-g7-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG7_CorruptedIndex (0.00s)
+=== RUN   TestG8_StaleCheckpointApplied
+    metadata_failures_test.go:516: Recover failed: recover tx-g8-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG8_StaleCheckpointApplied (0.00s)
+=== RUN   TestG10_VersionMismatch
+    metadata_failures_test.go:586: Recover failed: recover tx-g10-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG10_VersionMismatch (0.00s)
+=== RUN   TestG_JournalPrecedenceOverCorruptedMetadata
+    metadata_failures_test.go:651: Recover failed: recover tx-precedence-001: ensure extent files during recovery: extent extent-000001 has no checksum and its file is missing or corrupt; cannot recover without original payload
+--- FAIL: TestG_JournalPrecedenceOverCorruptedMetadata (0.00s)
+=== RUN   TestG_SafeRejectionOfAmbiguousMetadata
+--- PASS: TestG_SafeRejectionOfAmbiguousMetadata (0.00s)
+FAIL
+FAIL	github.com/xkzy/rdparityd/internal/journal	3.353s
+FAIL

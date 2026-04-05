@@ -95,3 +95,31 @@ func (c *Coordinator) ExtentProtectionClass(extentID string) (metadata.ExtentPro
 	}
 	return "", fmt.Errorf("extent not found: %s", extentID)
 }
+
+func (c *Coordinator) SetPoolProtectionState(targetState metadata.PoolProtectionState) error {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.PrototypeState(""))
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	state.Pool.ProtectionState = string(targetState)
+
+	_, err = c.commitState(state)
+	if err != nil {
+		return fmt.Errorf("commit state: %w", err)
+	}
+
+	return nil
+}

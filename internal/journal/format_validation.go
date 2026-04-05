@@ -121,7 +121,9 @@ func validateJournalFormat(journalPath string, r *FormatValidationResult) {
 	var recLen [4]byte
 	if _, err := io.ReadFull(f, recLen[:]); err != nil {
 		if err == io.EOF {
-			r.warnf("journal file %s is empty (no records)", journalPath)
+			// Empty journal is acceptable - it means all committed transactions
+			// have been compacted after their metadata snapshots were saved.
+			// This is normal operation, not a warning.
 			return
 		}
 		r.errorf("journal file %s: cannot read first record length: %v", journalPath, err)

@@ -136,7 +136,7 @@ func (s *Store) Append(record Record) (Record, error) {
 		return Record{}, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(s.path), 0o755); err != nil {
 		return Record{}, fmt.Errorf("create journal directory: %w", err)
 	}
 
@@ -155,6 +155,9 @@ func (s *Store) Append(record Record) (Record, error) {
 	}
 	if err := file.Sync(); err != nil {
 		return Record{}, fmt.Errorf("sync journal: %w", err)
+	}
+	if err := syncDir(filepath.Dir(s.path)); err != nil {
+		return Record{}, fmt.Errorf("sync journal directory: %w", err)
 	}
 
 	return sealed, nil
@@ -226,7 +229,8 @@ func ReplayRecords(records []Record) (ReplaySummary, error) {
 		}
 
 		lastState := states[len(states)-1]
-		if err := ValidateSequence(states); err != nil {
+		lastRecord := txRecords[len(txRecords)-1]
+		if err := ValidateRecordSequence(txRecords); err != nil {
 			summary.RequiresReplay = true
 			summary.IncompleteTxIDs = append(summary.IncompleteTxIDs, txID)
 			summary.Actions = append(summary.Actions, ReplayAction{
@@ -234,6 +238,18 @@ func ReplayRecords(records []Record) (ReplaySummary, error) {
 				LastState:      lastState,
 				Outcome:        StateAborted,
 				Recommendation: fmt.Sprintf("invalid journal sequence detected: %v; abort the transaction and inspect the journal tail", err),
+			})
+			continue
+		}
+
+		if isRepairRecord(lastRecord) && lastState != StateCommitted && lastState != StateAborted {
+			summary.RequiresReplay = true
+			summary.IncompleteTxIDs = append(summary.IncompleteTxIDs, txID)
+			summary.Actions = append(summary.Actions, ReplayAction{
+				TxID:           txID,
+				LastState:      lastState,
+				Outcome:        StateReplayRequired,
+				Recommendation: "repair transaction is incomplete; replay must verify or finish the healed extent/parity write before continuing",
 			})
 			continue
 		}

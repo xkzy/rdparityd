@@ -2,10 +2,11 @@ package parity
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/rand"
+
+	"lukechampine.com/blake3"
 )
 
 type Config struct {
@@ -187,6 +188,6 @@ func xorInto(dst, src []byte) {
 }
 
 func digest(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	h := blake3.Sum256(data)
+	return hex.EncodeToString(h[:])
 }

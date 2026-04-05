@@ -55,8 +55,14 @@ func TestStoreLoadRejectsTamperedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
-	mutated := strings.Replace(string(contents), "prepared", "committed", 1)
-	if err := os.WriteFile(path, []byte(mutated), 0o600); err != nil {
+	// The payload starts after the 4-byte RecordLen prefix and the 72-byte
+	// binary header (offset 76). Flip a byte in the payload so the BLAKE3
+	// record hash no longer matches, triggering a checksum mismatch on Load.
+	if len(contents) <= 76 {
+		t.Fatalf("journal file too short to tamper (%d bytes)", len(contents))
+	}
+	contents[76] ^= 0xFF
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 

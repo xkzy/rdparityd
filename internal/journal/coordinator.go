@@ -1,12 +1,13 @@
 package journal
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"lukechampine.com/blake3"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
@@ -298,10 +299,10 @@ func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte)
 func syntheticExtentBytes(extent metadata.Extent) []byte {
 	seed := fmt.Sprintf("%s|%s|%d|%d|%s", extent.ExtentID, extent.FileID, extent.LogicalOffset, extent.Length, extent.ParityGroupID)
 	data := make([]byte, extent.Length)
-	block := sha256.Sum256([]byte(seed))
+	block := blake3.Sum256([]byte(seed))
 	for offset := 0; offset < len(data); offset += len(block) {
 		copied := copy(data[offset:], block[:])
-		block = sha256.Sum256(block[:])
+		block = blake3.Sum256(block[:])
 		if copied == 0 {
 			break
 		}
@@ -310,8 +311,8 @@ func syntheticExtentBytes(extent metadata.Extent) []byte {
 }
 
 func digestBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	h := blake3.Sum256(data)
+	return hex.EncodeToString(h[:])
 }
 
 func xorInto(dst, src []byte) {

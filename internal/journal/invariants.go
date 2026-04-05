@@ -100,7 +100,7 @@ func checkE1ExtentChecksums(rootDir string, state metadata.SampleState) []Invari
 	return vs
 }
 
-// E2: every extent with a non-empty checksum must declare algorithm ChecksumAlgorithm ("sha256").
+// E2: every extent with a non-empty checksum must declare algorithm ChecksumAlgorithm ("blake3").
 func checkE2ChecksumAlg(state metadata.SampleState) []InvariantViolation {
 	var vs []InvariantViolation
 	for _, extent := range state.Extents {

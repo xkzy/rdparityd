@@ -3,7 +3,6 @@ package metadata
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -41,7 +40,7 @@ func TestStoreSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestStoreLoadRejectsTamperedSnapshot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "metadata.json")
+	path := filepath.Join(t.TempDir(), "metadata.bin")
 	store := NewStore(path)
 	state := PrototypeState("demo")
 	if _, err := store.Save(state); err != nil {
@@ -52,8 +51,13 @@ func TestStoreLoadRejectsTamperedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile returned error: %v", err)
 	}
-	mutated := strings.Replace(string(contents), "\"name\": \"demo\"", "\"name\": \"tampered\"", 1)
-	if err := os.WriteFile(path, []byte(mutated), 0o600); err != nil {
+	// The payload starts at offset 72 (after the 72-byte binary header).
+	// Flip a byte in the payload so the BLAKE3 hash no longer matches.
+	if len(contents) <= 72 {
+		t.Fatalf("snapshot file too short to tamper (%d bytes)", len(contents))
+	}
+	contents[72] ^= 0xFF
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 

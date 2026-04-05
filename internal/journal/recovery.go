@@ -156,6 +156,7 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 				return result, fmt.Errorf("recover %s: %w", txID, err)
 			}
 			result.RecoveredTxIDs = append(result.RecoveredTxIDs, txID)
+			metadataDirty = true
 		default:
 			return result, fmt.Errorf("unsupported recovery state %q for tx %s", last.State, txID)
 		}
@@ -349,12 +350,15 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 	if last.State == StateMetadataWritten {
 		committedAt := time.Now().UTC()
 		upsertTransaction(state, last, StateCommitted, false, &committedAt)
-		if _, err := c.commitState(*state); err != nil {
-			return fmt.Errorf("save committed metadata during recovery: %w", err)
-		}
+		// Metadata is already durable at StateMetadataWritten.
+		// Append committed record, then publish cached state.
 		if _, err := c.journal.Append(withState(last, StateCommitted)); err != nil {
 			return fmt.Errorf("append committed recovery record for %s: %w", last.TxID, err)
 		}
+		if _, err := c.saveStateSnapshot(*state); err != nil {
+			return fmt.Errorf("save committed metadata during recovery: %w", err)
+		}
+		c.publishCommittedState(*state)
 	}
 
 	return nil

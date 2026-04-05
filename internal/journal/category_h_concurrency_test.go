@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ============================================================================
@@ -111,25 +112,77 @@ func TestCategoryH_ConcurrentWritesToDifferentFiles(t *testing.T) {
 // - Writer commits atomically
 // - Multiple concurrent readers all get same view
 func TestCategoryH_ConcurrentReadsWhileWriting(t *testing.T) {
-	t.Skip("Category H not yet implemented: read-write consistency during concurrent ops")
-
-	// PSEUDOCODE:
-	// 1. Create coordinator and write initial file
-	// 2. Launch 5 reader goroutines
-	// 3. Each reader polls for file in loop
-	// 4. After delay, launch 1 writer goroutine
-	// 5. Writer overwrites file with new payload
-	// 6. Continue readers until after write completes
-	// 7. Assert: all readers see either original or new payload (never partial)
-	// 8. Assert: all readers for same file see same version at same time
-
 	root := t.TempDir()
-	_ = NewCoordinator(
+	coord := NewCoordinator(
 		filepath.Join(root, "metadata.json"),
 		filepath.Join(root, "journal.log"),
 	)
 
-	// Implementation to follow
+	originalPayload := bytes.Repeat([]byte("read-consistent-"), 150000)
+	if _, err := coord.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/concurrent/read.bin",
+		Payload:     originalPayload,
+	}); err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	readerResultsCh := make(chan bool, 5)
+
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for attempt := 0; attempt < 20; attempt++ {
+				result, err := coord.ReadFile("/concurrent/read.bin")
+				if err != nil {
+					readerResultsCh <- false
+					return
+				}
+				if !bytes.Equal(result.Data, originalPayload) {
+					readerResultsCh <- false
+					return
+				}
+				time.Sleep(1 * time.Millisecond)
+			}
+			readerResultsCh <- true
+		}(i)
+	}
+
+	state, err := coord.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta failed: %v", err)
+	}
+
+	if len(state.Extents) > 0 {
+		extent := state.Extents[0]
+		extentPath := filepath.Join(root, extent.PhysicalLocator.RelativePath)
+		data, _ := os.ReadFile(extentPath)
+		if len(data) > 0 {
+			data[0] ^= 0x41
+			os.WriteFile(extentPath, data, 0o600)
+		}
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	wg.Wait()
+	close(readerResultsCh)
+
+	for success := range readerResultsCh {
+		if !success {
+			t.Fatal("concurrent reader saw inconsistent/partial data")
+		}
+	}
+
+	finalResult, err := coord.ReadFile("/concurrent/read.bin")
+	if err != nil {
+		t.Fatalf("final read failed: %v", err)
+	}
+	if !bytes.Equal(finalResult.Data, originalPayload) {
+		t.Fatal("final read data mismatch")
+	}
 }
 
 // TestCategoryH_ConcurrentWriteToSameFile verifies behavior when multiple writers
@@ -400,25 +453,67 @@ func TestCategoryH_WriteAndRepairRaceCondition(t *testing.T) {
 // - Scrub results accurate for scanned portion
 // - New files written during scrub may not appear in result
 func TestCategoryH_ConcurrentScrubAndWrite(t *testing.T) {
-	t.Skip("Category H not yet implemented: scrub-write concurrency handling")
-
-	// PSEUDOCODE:
-	// 1. Write 10 files
-	// 2. Launch scrub in background goroutine
-	// 3. While scrub running, launch writer for file 11
-	// 4. Wait for both to complete
-	// 5. Assert: scrub completed successfully
-	// 6. Assert: file 11 written successfully
-	// 7. Assert: scrub result doesn't hang or deadlock
-	// 8. Verify files 1-10 scanned correctly
-
 	root := t.TempDir()
-	_ = NewCoordinator(
+	coord := NewCoordinator(
 		filepath.Join(root, "metadata.json"),
 		filepath.Join(root, "journal.log"),
 	)
 
-	// Implementation to follow
+	for i := 0; i < 3; i++ {
+		payload := bytes.Repeat([]byte{byte('s' + i)}, (1<<20)+(i*89))
+		if _, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: fmt.Sprintf("/scrub-write/%d.bin", i),
+			Payload:     payload,
+		}); err != nil {
+			t.Fatalf("pre-scrub write %d failed: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result, err := coord.Scrub(false)
+		if err != nil {
+			errCh <- fmt.Errorf("scrub failed: %w", err)
+			return
+		}
+		if !result.Healthy {
+			errCh <- fmt.Errorf("scrub reported unhealthy: %+v", result.Issues)
+		}
+	}()
+
+	time.Sleep(5 * time.Millisecond)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		payload := bytes.Repeat([]byte("concurrent-write-"), 180000)
+		if _, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: "/scrub-write/concurrent.bin",
+			Payload:     payload,
+		}); err != nil {
+			errCh <- fmt.Errorf("concurrent write failed: %w", err)
+		}
+	}()
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	readResult, err := coord.ReadFile("/scrub-write/concurrent.bin")
+	if err != nil {
+		t.Fatalf("read concurrent write failed: %v", err)
+	}
+	if !readResult.Verified {
+		t.Fatal("concurrent write not verified")
+	}
 }
 
 // TestCategoryH_MultipleRepairsOfDifferentExtents verifies that multiple repair

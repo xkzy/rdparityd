@@ -30,7 +30,19 @@ func TestLoadRuntimeStateRollsForwardReplayRequiredWrite(t *testing.T) {
 		t.Fatalf("expected data-written state, got %q", result.FinalState)
 	}
 
+	// Check what's in the journal before recovery
+	store := journal.NewStore(journalPath)
+	records, _ := store.Load()
+	t.Logf("DEBUG: records in journal before recovery: %d", len(records))
+	for i, r := range records {
+		t.Logf("DEBUG: record %d: tx=%s state=%s", i, r.TxID, r.State)
+	}
+
+	t.Logf("DEBUG: loading runtime state...")
 	state := loadRuntimeState("demo", journalPath, metadataPath)
+	t.Logf("DEBUG: startupError=%q, RequiresReplay=%v, Status=%q",
+		state.StartupError, state.JournalSummary.RequiresReplay, state.StartupAdmission.Status)
+	t.Logf("DEBUG: Prototype files=%d, extents=%d", len(state.Prototype.Files), len(state.Prototype.Extents))
 	if state.healthStatus() != "ok" {
 		t.Fatalf("expected startup replay to recover the pool, got %q", state.healthStatus())
 	}

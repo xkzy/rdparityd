@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -23,10 +24,13 @@ type ScrubResult struct {
 	StartedAt            time.Time    `json:"started_at"`
 	CompletedAt          time.Time    `json:"completed_at"`
 	Repair               bool         `json:"repair"`
+	Resumed              bool         `json:"resumed,omitempty"`
 	Healthy              bool         `json:"healthy"`
 	FilesChecked         int          `json:"files_checked"`
 	ExtentsChecked       int          `json:"extents_checked"`
+	ExtentsSkipped       int          `json:"extents_skipped,omitempty"`
 	ParityGroupsChecked  int          `json:"parity_groups_checked"`
+	ParityGroupsSkipped  int          `json:"parity_groups_skipped,omitempty"`
 	HealedCount          int          `json:"healed_count"`
 	FailedCount          int          `json:"failed_count"`
 	HealedExtentIDs      []string     `json:"healed_extent_ids,omitempty"`
@@ -37,6 +41,11 @@ type ScrubResult struct {
 const maxScrubHistory = 32
 
 func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return ScrubResult{}, err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.scrubWithRepairFailAfter(repair, "")
@@ -52,11 +61,34 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 		Repair:    repair,
 		Healthy:   true,
 	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
+		return result, err
+	}
 
 	state, err := c.loadState(metadata.PrototypeState("demo"))
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
+
+	progress, err := loadScrubProgress(c.metadataPath)
+	if err != nil {
+		progress = ScrubProgress{Repair: repair}
+	}
+	if progress.Repair != repair {
+		progress = ScrubProgress{Repair: repair}
+	}
+	if len(progress.CompletedExtents) > 0 || len(progress.CompletedParityGroups) > 0 {
+		result.Resumed = true
+	}
+	completedExtents := make(map[string]bool, len(progress.CompletedExtents))
+	for _, id := range progress.CompletedExtents {
+		completedExtents[id] = true
+	}
+	completedGroups := make(map[string]bool, len(progress.CompletedParityGroups))
+	for _, id := range progress.CompletedParityGroups {
+		completedGroups[id] = true
+	}
+	interrupted := false
 
 	rootDir := filepath.Dir(c.metadataPath)
 	result.FilesChecked = len(state.Files)
@@ -79,6 +111,10 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 	})
 
 	for _, extent := range extents {
+		if completedExtents[extent.ExtentID] {
+			result.ExtentsSkipped++
+			continue
+		}
 		_, repaired, err := verifyExtent(c.metadataPath, c.journal, state, extent, repair, failAfter)
 		if err != nil {
 			result.FailedCount++
@@ -91,9 +127,11 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 				Status:        "failed",
 				Detail:        err.Error(),
 			})
-			continue
-		}
-		if repaired {
+			if strings.Contains(err.Error(), "injected repair crash") {
+				interrupted = true
+				continue
+			}
+		} else if repaired {
 			result.HealedCount++
 			result.HealedExtentIDs = append(result.HealedExtentIDs, extent.ExtentID)
 			result.Issues = append(result.Issues, ScrubIssue{
@@ -105,6 +143,17 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 				Detail:        "restored from parity",
 			})
 		}
+		completedExtents[extent.ExtentID] = true
+		progress.CompletedExtents = append(progress.CompletedExtents, extent.ExtentID)
+		progress.LastUpdated = time.Now().UTC()
+		if saveErr := saveScrubProgress(c.metadataPath, progress); saveErr != nil {
+			result.Issues = append(result.Issues, ScrubIssue{
+				Kind:     "extent",
+				ExtentID: extent.ExtentID,
+				Status:   "progress-save-failed",
+				Detail:   saveErr.Error(),
+			})
+		}
 	}
 
 	groups := append([]metadata.ParityGroup(nil), state.ParityGroups...)
@@ -114,6 +163,10 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 
 	groupsToRepair := make(map[string]struct{})
 	for _, group := range groups {
+		if completedGroups[group.ParityGroupID] {
+			result.ParityGroupsSkipped++
+			continue
+		}
 		if err := verifyParityGroup(rootDir, group); err != nil {
 			if repair {
 				groupsToRepair[group.ParityGroupID] = struct{}{}
@@ -126,6 +179,17 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 				ParityGroupID: group.ParityGroupID,
 				Status:        "failed",
 				Detail:        err.Error(),
+			})
+		}
+		completedGroups[group.ParityGroupID] = true
+		progress.CompletedParityGroups = append(progress.CompletedParityGroups, group.ParityGroupID)
+		progress.LastUpdated = time.Now().UTC()
+		if saveErr := saveScrubProgress(c.metadataPath, progress); saveErr != nil {
+			result.Issues = append(result.Issues, ScrubIssue{
+				Kind:          "parity",
+				ParityGroupID: group.ParityGroupID,
+				Status:        "progress-save-failed",
+				Detail:        saveErr.Error(),
 			})
 		}
 	}
@@ -149,6 +213,9 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 					Status:        "failed",
 					Detail:        err.Error(),
 				})
+				if strings.Contains(err.Error(), "injected repair crash") {
+					interrupted = true
+				}
 				continue
 			}
 			if repaired {
@@ -161,10 +228,27 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 					Detail:        "regenerated from member extents",
 				})
 			}
+			if !completedGroups[groupID] {
+				completedGroups[groupID] = true
+				progress.CompletedParityGroups = append(progress.CompletedParityGroups, groupID)
+				progress.LastUpdated = time.Now().UTC()
+				if saveErr := saveScrubProgress(c.metadataPath, progress); saveErr != nil {
+					result.Issues = append(result.Issues, ScrubIssue{
+						Kind:          "parity",
+						ParityGroupID: groupID,
+						Status:        "progress-save-failed",
+						Detail:        saveErr.Error(),
+					})
+				}
+			}
 		}
 	}
 
 	result.CompletedAt = time.Now().UTC()
+	if interrupted {
+		return result, nil
+	}
+	deleteScrubProgress(c.metadataPath)
 	appendScrubHistory(&state, result)
 	if _, err := c.commitState(state); err != nil {
 		return result, fmt.Errorf("save metadata snapshot after scrub: %w", err)

@@ -105,6 +105,14 @@ func evaluateStartupAdmission(state *runtimeState) startupAdmission {
 	formatResult := journal.ValidateOnDiskFormats(rootDir, state.MetadataPath, state.JournalPath)
 	analysis := journal.AnalyzeMultiDiskFailures(rootDir, state.Prototype)
 
+	log.Printf("[DEBUG] startup admission: RequiresReplay=%v, formatErrors=%d, formatWarnings=%d",
+		state.JournalSummary.RequiresReplay, len(formatResult.Errors), len(formatResult.Warnings))
+	if len(formatResult.Warnings) > 0 && len(formatResult.Warnings) < 5 {
+		for i, w := range formatResult.Warnings {
+			log.Printf("[DEBUG] format warning %d: %s", i, w)
+		}
+	}
+
 	if state.StartupError != "" {
 		reasons = append(reasons, state.StartupError)
 	}

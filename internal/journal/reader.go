@@ -164,11 +164,13 @@ func verifyExtent(metadataPath string, journal *Store, state metadata.SampleStat
 	path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 	data, err := os.ReadFile(path)
 	if err == nil {
-		normalized := normalizeExtentLength(data, extent.Length)
-		if digestBytes(normalized) == extent.Checksum {
-			return normalized, false, nil
+		if int64(len(data)) == extent.Length && digestBytes(data) == extent.Checksum {
+			return append([]byte(nil), data...), false, nil
 		}
 		if !repair {
+			if int64(len(data)) != extent.Length {
+				return nil, false, fmt.Errorf("extent length mismatch for %s: committed=%d disk=%d", extent.ExtentID, extent.Length, len(data))
+			}
 			return nil, false, fmt.Errorf("extent checksum mismatch for %s", extent.ExtentID)
 		}
 	} else if !repair {
@@ -209,6 +211,9 @@ func reconstructExtent(rootDir string, state metadata.SampleState, target metada
 		memberData, err := os.ReadFile(memberPath)
 		if err != nil {
 			return nil, fmt.Errorf("read peer extent for reconstruction: %w", err)
+		}
+		if int64(len(memberData)) != extent.Length {
+			return nil, fmt.Errorf("peer extent length mismatch for %s: committed=%d disk=%d", extent.ExtentID, extent.Length, len(memberData))
 		}
 		xorInto(rebuilt, normalizeExtentLength(memberData, int64(len(rebuilt))))
 	}

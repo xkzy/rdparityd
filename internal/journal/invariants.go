@@ -144,8 +144,16 @@ func checkE1ExtentChecksums(rootDir string, state metadata.SampleState) []Invari
 			})
 			continue
 		}
-		normalized := normalizeExtentLength(data, extent.Length)
-		if got := digestBytes(normalized); got != extent.Checksum {
+		if int64(len(data)) != extent.Length {
+			vs = append(vs, InvariantViolation{
+				Code:   "E1",
+				Kind:   "extent",
+				Entity: extent.ExtentID,
+				Message: fmt.Sprintf("length mismatch: metadata=%d disk=%d", extent.Length, len(data)),
+			})
+			continue
+		}
+		if got := digestBytes(data); got != extent.Checksum {
 			vs = append(vs, InvariantViolation{
 				Code:   "E1",
 				Kind:   "extent",

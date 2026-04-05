@@ -299,6 +299,55 @@ func TestI13_ReadReturnsExactlyCommittedBytes(t *testing.T) {
 	}
 }
 
+// TestI13_ReadRejectsOverlongExtentFile verifies that an extent with the right
+// checksum prefix but extra trailing bytes is treated as corruption and healed,
+// rather than being silently accepted after truncation.
+func TestI13_ReadRejectsOverlongExtentFile(t *testing.T) {
+	dir := t.TempDir()
+	meta, journal, payload := writeAndCommit(t, dir, "/test/i13-overlong.bin", 1<<20, 14)
+
+	state, err := metadata.NewStore(meta).Load()
+	if err != nil {
+		t.Fatalf("load metadata: %v", err)
+	}
+	if len(state.Extents) == 0 {
+		t.Fatal("no extents")
+	}
+	target := state.Extents[0]
+	path := filepath.Join(dir, target.PhysicalLocator.RelativePath)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatalf("open extent for append: %v", err)
+	}
+	if _, err := f.Write([]byte("TRAILING-GARBAGE")); err != nil {
+		f.Close()
+		t.Fatalf("append garbage: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close appended extent: %v", err)
+	}
+
+	coord := NewCoordinator(meta, journal)
+	result, err := coord.ReadFile("/test/i13-overlong.bin")
+	if err != nil {
+		t.Fatalf("ReadFile overlong extent: %v", err)
+	}
+	if !bytes.Equal(result.Data, payload) {
+		t.Fatal("repaired data mismatch after overlong extent corruption")
+	}
+	if len(result.HealedExtentIDs) == 0 || result.HealedExtentIDs[0] != target.ExtentID {
+		t.Fatalf("expected healed extent %s, got %v", target.ExtentID, result.HealedExtentIDs)
+	}
+
+	restored, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read healed extent: %v", err)
+	}
+	if int64(len(restored)) != target.Length {
+		t.Fatalf("healed extent length mismatch: expected %d got %d", target.Length, len(restored))
+	}
+}
+
 // ─── I8: Post-rebuild integrity check ────────────────────────────────────────
 
 // TestI8_RebuildProducesVerifiedExtents verifies that after RebuildDataDisk(),

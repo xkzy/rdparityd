@@ -85,7 +85,7 @@ func (s *Store) Save(state SampleState) (SnapshotEnvelope, error) {
 	copy(hdr[:40], hdrPrefix)
 	copy(hdr[40:72], hashBytes[:])
 
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := ensureDir(filepath.Dir(s.path), 0o755); err != nil {
 		return SnapshotEnvelope{}, fmt.Errorf("create metadata directory: %w", err)
 	}
 
@@ -850,7 +850,7 @@ func (a *Allocator) AllocateFile(path string, sizeBytes int64) (FileRecord, []Ex
 
 	extentSize := a.state.Pool.ExtentSizeBytes
 	if extentSize <= 0 {
-		extentSize = 1 << 20
+		extentSize = DefaultExtentSize
 	}
 
 	remaining := sizeBytes

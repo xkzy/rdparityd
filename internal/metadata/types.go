@@ -131,7 +131,6 @@ type SampleState struct {
 
 func PrototypeState(name string) SampleState {
 	now := time.Now().UTC()
-	committedAt := now
 
 	return SampleState{
 		Pool: Pool{
@@ -191,18 +190,7 @@ func PrototypeState(name string) SampleState {
 		Files:        []FileRecord{},
 		Extents:      []Extent{},
 		ParityGroups: []ParityGroup{},
-		Transactions: []Transaction{
-			{
-				TxID:              "tx-bootstrap",
-				State:             "committed",
-				StartedAt:         now,
-				CommittedAt:       &committedAt,
-				AffectedExtentIDs: []string{"extent-000001"},
-				OldGeneration:     0,
-				NewGeneration:     1,
-				ReplayRequired:    false,
-			},
-		},
+		Transactions: []Transaction{},
 		ScrubHistory: []ScrubRun{},
 	}
 }

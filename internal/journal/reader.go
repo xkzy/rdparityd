@@ -15,6 +15,11 @@ import (
 // layer to enumerate files and directories without needing to go through the
 // full coordinator write path.
 func (c *Coordinator) ReadMeta() (metadata.SampleState, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cachedStateSet {
+		return *c.cachedState, nil
+	}
 	state, err := c.metadata.Load()
 	if err == nil {
 		return state, nil
@@ -28,6 +33,13 @@ func (c *Coordinator) ReadMeta() (metadata.SampleState, error) {
 // PoolName returns the pool name from the current metadata state, or "demo" if
 // no metadata has been written yet.
 func (c *Coordinator) PoolName() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cachedStateSet {
+		if c.cachedState.Pool.Name != "" {
+			return c.cachedState.Pool.Name
+		}
+	}
 	state, err := c.metadata.Load()
 	if err != nil || state.Pool.Name == "" {
 		return "demo"
@@ -51,6 +63,12 @@ type ReadResult struct {
 }
 
 func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.readFileWithRepairFailAfter(logicalPath, "")
+}
+
+func (c *Coordinator) readFileWithRepairFailAfter(logicalPath string, failAfter State) (ReadResult, error) {
 	if c == nil {
 		return ReadResult{}, fmt.Errorf("coordinator is nil")
 	}
@@ -58,9 +76,17 @@ func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
 		return ReadResult{}, fmt.Errorf("logical path is required")
 	}
 
-	state, err := c.metadata.Load()
-	if err != nil {
-		return ReadResult{}, fmt.Errorf("load metadata state: %w", err)
+	var state metadata.SampleState
+	var err error
+	if c.cachedStateSet {
+		state = *c.cachedState
+	} else {
+		state, err = c.metadata.Load()
+		if err != nil {
+			return ReadResult{}, fmt.Errorf("load metadata state: %w", err)
+		}
+		// Don't cache here: a read should not prime the cache with a
+		// potentially-incomplete state. Only commits populate the cache.
 	}
 
 	file, extents, err := findFileExtents(state, logicalPath)
@@ -68,11 +94,10 @@ func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
 		return ReadResult{}, err
 	}
 
-	rootDir := filepath.Dir(c.metadataPath)
 	content := make([]byte, 0, file.SizeBytes)
 	healed := make([]string, 0)
 	for _, extent := range extents {
-		data, repaired, err := readVerifiedExtent(rootDir, state, extent)
+		data, repaired, err := c.readVerifiedExtent(state, extent, failAfter)
 		if err != nil {
 			return ReadResult{}, fmt.Errorf("read extent %s: %w", extent.ExtentID, err)
 		}
@@ -80,6 +105,15 @@ func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
 		if repaired {
 			healed = append(healed, extent.ExtentID)
 		}
+	}
+
+	// I13 (Read Correctness): the assembled content must be exactly as long as
+	// the committed file size. A mismatch indicates a bug in the read path or
+	// a metadata/extent length inconsistency that was not caught by I5.
+	if int64(len(content)) != file.SizeBytes {
+		return ReadResult{}, fmt.Errorf(
+			"I13: read length mismatch for %s: committed size=%d got=%d",
+			logicalPath, file.SizeBytes, len(content))
 	}
 
 	return ReadResult{
@@ -92,6 +126,14 @@ func (c *Coordinator) ReadFile(logicalPath string) (ReadResult, error) {
 	}, nil
 }
 
+// findFileExtents locates the FileRecord and all associated extents for the
+// given logical path, returning extents sorted by LogicalOffset.
+//
+// Complexity: O(F) file scan + O(E) extent scan where F = number of files and
+// E = number of extents. For pools with many files, a future version will
+// maintain in-memory indexes (map[path]FileRecord, map[fileID][]Extent) built
+// once at state load time and invalidated on commit. The on-disk format does
+// not need to change to add those indexes.
 func findFileExtents(state metadata.SampleState, logicalPath string) (metadata.FileRecord, []metadata.Extent, error) {
 	for _, file := range state.Files {
 		if file.Path != logicalPath {
@@ -113,11 +155,12 @@ func findFileExtents(state metadata.SampleState, logicalPath string) (metadata.F
 	return metadata.FileRecord{}, nil, fmt.Errorf("file not found: %s", logicalPath)
 }
 
-func readVerifiedExtent(rootDir string, state metadata.SampleState, extent metadata.Extent) ([]byte, bool, error) {
-	return verifyExtent(rootDir, state, extent, true)
+func (c *Coordinator) readVerifiedExtent(state metadata.SampleState, extent metadata.Extent, failAfter State) ([]byte, bool, error) {
+	return verifyExtent(c.metadataPath, c.journal, state, extent, true, failAfter)
 }
 
-func verifyExtent(rootDir string, state metadata.SampleState, extent metadata.Extent, repair bool) ([]byte, bool, error) {
+func verifyExtent(metadataPath string, journal *Store, state metadata.SampleState, extent metadata.Extent, repair bool, failAfter State) ([]byte, bool, error) {
+	rootDir := filepath.Dir(metadataPath)
 	path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -132,17 +175,13 @@ func verifyExtent(rootDir string, state metadata.SampleState, extent metadata.Ex
 		return nil, false, fmt.Errorf("read extent file: %w", err)
 	}
 
-	rebuilt, err := reconstructExtent(rootDir, state, extent)
-	if err != nil {
-		return nil, false, err
+	if !repair {
+		return nil, false, fmt.Errorf("extent %s is missing or corrupt", extent.ExtentID)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, false, fmt.Errorf("create extent directory: %w", err)
+	if journal == nil {
+		return nil, false, fmt.Errorf("journal store is nil")
 	}
-	if err := os.WriteFile(path, rebuilt, 0o600); err != nil {
-		return nil, false, fmt.Errorf("rewrite healed extent: %w", err)
-	}
-	return rebuilt, true, nil
+	return runExtentRepair(metadataPath, journal, state, extent, failAfter)
 }
 
 func reconstructExtent(rootDir string, state metadata.SampleState, target metadata.Extent) ([]byte, error) {

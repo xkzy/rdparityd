@@ -50,7 +50,7 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 		} else {
 			// Case (b): file exists but is unreadable (torn write, wrong magic,
 			// checksum mismatch). Do NOT silently use defaultState here;
-			// we may have committed data that the prototype knows nothing about.
+			// we may have committed data that prototype knows nothing about.
 			metaCorrupt = true
 			state = defaultState // tentative; may be overridden by journal below
 		}
@@ -65,9 +65,9 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 		return RecoveryResult{}, fmt.Errorf("load journal for recovery: %w", err)
 	}
 
-	// I12: if metadata was corrupt AND the journal is empty, we cannot
+	// I12: if metadata was corrupt AND to journal is empty, we cannot
 	// determine authoritative state. Refuse to start rather than silently
-	// using the prototype (which would claim an empty pool over possibly
+	// using a prototype (which would claim an empty pool over possibly
 	// committed data).
 	if metaCorrupt && len(records) == 0 {
 		return RecoveryResult{}, fmt.Errorf(
@@ -91,7 +91,21 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 	}
 	metadataDirty := false
 
+	// I6 (Replay Idempotence): Track which transactions have already
+	// been applied to prevent duplicate application on replay. This is critical
+	// because the journal may contain duplicate committed records (e.g., from
+	// previous incomplete recovery attempts) and applying the same transaction
+	// twice would corrupt state.
+	appliedTxIDs := make(map[string]bool)
 	for _, txID := range order {
+		// Skip this transaction if it was already applied in a previous iteration.
+		// This ensures idempotence: applying the same journal multiple
+		// times produces the same final state.
+		if appliedTxIDs[txID] {
+			continue
+		}
+		appliedTxIDs[txID] = true
+
 		txRecords := grouped[txID]
 		if len(txRecords) == 0 {
 			continue
@@ -105,6 +119,8 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 			result.AttemptedTxIDs = append(result.AttemptedTxIDs, txID)
 			changed, err := rollForwardRepair(c.metadataPath, c.journal, &state, txRecords)
 			if err != nil {
+				// Mark transaction as not applied on error so it can be retried
+				appliedTxIDs[txID] = false
 				return result, fmt.Errorf("recover repair tx %s: %w", txID, err)
 			}
 			metadataDirty = metadataDirty || changed
@@ -115,6 +131,8 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 		case StateCommitted:
 			changed, err := reconcileCommittedTransaction(c.metadataPath, &state, txRecords)
 			if err != nil {
+				// Mark transaction as not applied on error so it can be retried
+				appliedTxIDs[txID] = false
 				return result, fmt.Errorf("reconcile committed tx %s: %w", txID, err)
 			}
 			metadataDirty = metadataDirty || changed
@@ -151,7 +169,7 @@ func (c *Coordinator) recoverWithStateLocked(defaultState metadata.SampleState) 
 
 	// Before declaring recovery complete, check that the on-disk state is
 	// actually recoverable. If multiple disks have failed in the same parity
-	// group the data is permanently lost; fail loudly rather than returning a
+	// group, data is permanently lost; fail loudly rather than returning a
 	// clean result that masks the loss.
 	analysis := AnalyzeMultiDiskFailures(filepath.Dir(c.metadataPath), state)
 	if !analysis.RecoveryIsPossible {
@@ -183,12 +201,12 @@ func parityGroupsBeforeMerge(state *metadata.SampleState) map[string]map[string]
 
 // invalidateParityChecksumsForChangedGroups resets ParityChecksum to "" for any
 // parity group whose member list changed during merge. This forces recomputation
-// and prevents the staleness corruption where a group's parity file contains only
+// and prevents staleness corruption where a group's parity file contains only
 // old extents but metadata claims it covers new extents.
 //
 // CRITICAL for recovery: When transaction T1 commits E1,E2→G1, then T2 adds E3→G1
 // and crashes at StateParityWritten, recovery must detect that G1 now has 3 members
-// but the on-disk parity only XORs 2. The only way to detect this is to track that
+// but on-disk parity only XORs 2. The only way to detect this is to track that
 // the member list changed, then force recomputation.
 func invalidateParityChecksumsForChangedGroups(state *metadata.SampleState, before map[string]map[string]bool) {
 	for i := range state.ParityGroups {
@@ -218,7 +236,7 @@ func mapsEqual(a, b map[string]bool) bool {
 	return true
 }
 
-// errUnrecoverableAbort is a sentinel returned by rollForwardWrite when the
+// errUnrecoverableAbort is a sentinel returned by rollForwardWrite when a
 // transaction was explicitly aborted because its parity peers were unrecoverable.
 // RecoverWithState uses this to route it to AbortedTxIDs instead of RecoveredTxIDs.
 type errUnrecoverableAbort struct{ txID string }
@@ -255,7 +273,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 		mergeParityGroups(state, last.Extents)
 		// I2: invalidate checksums for any group that gained new members.
 		// This is CRITICAL for correctness — if we don't do this, parityChecksumStale
-		// will see a matching checksum (from the old member list) and skip recomputation,
+		// will see a matching checksum (from old member list) and skip recomputation,
 		// resulting in parity data that doesn't match the new member list.
 		invalidateParityChecksumsForChangedGroups(state, parityGroupsBefore)
 	}
@@ -264,7 +282,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 
 	// Verify that each extent file exists on disk and has the correct checksum.
 	// Unlike the original write path we must NOT overwrite existing files with
-	// synthetic data — the real payload bytes were already written before the
+	// synthetic data — real payload bytes were already written before the
 	// crash and must be left untouched.
 	if err := ensureExtentFiles(rootDir, *state, last.Extents); err != nil {
 		return fmt.Errorf("ensure extent files during recovery: %w", err)
@@ -287,25 +305,25 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 			return err
 		}
 		if _, err := c.journal.Append(withState(last, StateParityWritten)); err != nil {
-			return fmt.Errorf("append parity-written recovery record: %w", err)
+			return fmt.Errorf("append parity-written recovery record for %s: %w", last.TxID, err)
 		}
 		last.State = StateParityWritten
 	}
 
 	if last.State == StateParityWritten {
-		// Re-run parity computation to ensure the checksum stored in metadata
+		// Re-run parity computation to ensure that the checksum stored in metadata
 		// accurately reflects the current on-disk parity file. The parity file
 		// may have been written with additional extents from other committed
 		// transactions, leaving the committed metadata snapshot with a stale
-		// checksum. writeParityFiles recomputes the XOR from all current member
+		// checksum. writeParityFiles recomputes XOR from all current member
 		// extents, rewrites the parity file only if the checksum has changed, and
 		// updates state.ParityGroups[i].ParityChecksum in place.
 		//
-		// Optimisation: if every parity group already has the correct checksum
-		// (common for the metadata-written case where we fell through from
+		// Optimization: if every parity group already has the correct checksum
+		// (common for metadata-written case where we fell through from
 		// data-written in the same recovery pass), skip the disk IO.
 		if parityChecksumStale(rootDir, *state, last.Extents) {
-			// Parity must be recomputed — apply the same guard as the
+			// Parity must be recomputed — apply the same guard as in
 			// DataWritten path: validate committed members first to prevent
 			// a corrupt peer from poisoning the recomputed parity.
 			if err := ensureHealthyCommittedParityInputs(c.metadataPath, c.journal, *state, last.Extents); err != nil {
@@ -323,7 +341,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 			return fmt.Errorf("save metadata during recovery: %w", err)
 		}
 		if _, err := c.journal.Append(withState(last, StateMetadataWritten)); err != nil {
-			return fmt.Errorf("append metadata-written recovery record: %w", err)
+			return fmt.Errorf("append metadata-written recovery record for %s: %w", last.TxID, err)
 		}
 		last.State = StateMetadataWritten
 	}
@@ -335,7 +353,7 @@ func (c *Coordinator) rollForwardWrite(state *metadata.SampleState, txRecords []
 			return fmt.Errorf("save committed metadata during recovery: %w", err)
 		}
 		if _, err := c.journal.Append(withState(last, StateCommitted)); err != nil {
-			return fmt.Errorf("append committed recovery record: %w", err)
+			return fmt.Errorf("append committed recovery record for %s: %w", last.TxID, err)
 		}
 	}
 
@@ -411,17 +429,20 @@ func effectiveRecoveryRecord(txRecords []Record) Record {
 	if last.State != StateReplayRequired {
 		return last
 	}
+
+	// Return the last record with a valid state before StateReplayRequired.
+	// This ensures that rollForwardWrite sees the correct state to resume from.
 	for i := len(txRecords) - 1; i >= 0; i-- {
 		if txRecords[i].State != StateReplayRequired {
 			return txRecords[i]
 		}
 	}
-	return last
+	return Record{}
 }
 
 // parityChecksumStale returns true if any parity group referenced by extents
 // has an on-disk parity file whose checksum differs from the stored metadata
-// checksum. A mismatch means the metadata is stale and writeParityFiles must
+// checksum. A mismatch means that metadata is stale and writeParityFiles must
 // be called to reconcile them.
 func parityChecksumStale(rootDir string, state metadata.SampleState, extents []metadata.Extent) bool {
 	seen := make(map[string]bool)
@@ -447,6 +468,7 @@ func parityChecksumStale(rootDir string, state metadata.SampleState, extents []m
 		if err != nil {
 			return true // file missing; must recompute
 		}
+
 		if digestBytes(data) != storedChecksum {
 			return true
 		}
@@ -476,9 +498,9 @@ func reconcileCommittedTransaction(metadataPath string, state *metadata.SampleSt
 
 	mergeParityGroups(state, last.Extents)
 
-	// I2/I5: if the transaction added new member extents to an existing
+	// I2/I5: if transaction added new member extents to an existing
 	// parity group, the merged group will have an updated member list
-	// but the ParityChecksum will still reflect the old list.
+	// but ParityChecksum will still reflect the old list.
 	// We recompute it directly from the parity file since this transaction
 	// was fully committed before the crash.
 	for i, group := range state.ParityGroups {

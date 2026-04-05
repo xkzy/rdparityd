@@ -1,7 +1,6 @@
 package journal
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -11,10 +10,10 @@ func TestRenameFileSucceeds(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	_, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/a/file.txt",
+		PoolName:       "demo",
+		LogicalPath:    "/a/file.txt",
 		AllowSynthetic: true,
-		SizeBytes:   1024,
+		SizeBytes:      1024,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -54,10 +53,10 @@ func TestRenameFileSamePathIsNoOp(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	_, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/same.txt",
+		PoolName:       "demo",
+		LogicalPath:    "/same.txt",
 		AllowSynthetic: true,
-		SizeBytes:   512,
+		SizeBytes:      512,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -77,10 +76,10 @@ func TestRenameFileNotFound(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	_, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/exists.txt",
+		PoolName:       "demo",
+		LogicalPath:    "/exists.txt",
 		AllowSynthetic: true,
-		SizeBytes:   512,
+		SizeBytes:      512,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -120,41 +119,93 @@ func TestRenameFileEmptyPaths(t *testing.T) {
 	}
 }
 
-func TestOverwriteFileReturnsNotSupported(t *testing.T) {
+func TestOverwriteFileBasic(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	err := coord.OverwriteFile("/file.txt", 0, []byte("data"))
-	if err == nil {
-		t.Fatal("expected ErrNotSupported")
+	path := "/test/file.bin"
+	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("expected ErrNotSupported, got: %v", err)
+
+	result, err := coord.OverwriteFile(path, 0, []byte("modified"))
+	if err != nil {
+		t.Fatalf("OverwriteFile failed: %v", err)
+	}
+	if result.TxID == "" {
+		t.Error("expected non-empty txid")
+	}
+	if len(result.Extents) == 0 {
+		t.Error("expected modified extents")
+	}
+
+	readResult, err := coord.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	expected := "modified"
+	for i := 0; i < len(expected) && i < len(readResult.Data); i++ {
+		if readResult.Data[i] != expected[i] {
+			t.Errorf("byte mismatch at position %d: got %d want %d", i, readResult.Data[i], expected[i])
+			break
+		}
 	}
 }
 
-func TestTruncateFileReturnsNotSupported(t *testing.T) {
+func TestTruncateFileBasic(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	err := coord.TruncateFile("/file.txt", 0)
-	if err == nil {
-		t.Fatal("expected ErrNotSupported")
+	path := "/test/file.bin"
+	// Use 2 full extents (default 1MB each) then truncate to 1 extent
+	originalSize := 2 * 1024 * 1024
+	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: int64(originalSize)}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("expected ErrNotSupported, got: %v", err)
+
+	// Truncate to 1 extent (1MB)
+	result, err := coord.TruncateFile(path, 1024*1024)
+	if err != nil {
+		t.Fatalf("TruncateFile failed: %v", err)
+	}
+	if result.TxID == "" {
+		t.Error("expected non-empty txid")
+	}
+
+	readResult, err := coord.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if readResult.File.SizeBytes != 1024*1024 {
+		t.Errorf("expected size %d, got %d", 1024*1024, readResult.File.SizeBytes)
 	}
 }
 
-func TestGrowFileReturnsNotSupported(t *testing.T) {
+func TestGrowFileBasic(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	err := coord.GrowFile("/file.txt", []byte("more data"))
-	if err == nil {
-		t.Fatal("expected ErrNotSupported")
+	path := "/test/file.bin"
+	original := []byte("original content")
+	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: original}); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
-	if !errors.Is(err, ErrNotSupported) {
-		t.Fatalf("expected ErrNotSupported, got: %v", err)
+
+	appended := []byte(" appended")
+	result, err := coord.GrowFile(path, appended)
+	if err != nil {
+		t.Fatalf("GrowFile failed: %v", err)
+	}
+	if result.TxID == "" {
+		t.Error("expected non-empty txid")
+	}
+
+	readResult, err := coord.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	expected := len(original) + len(appended)
+	if readResult.File.SizeBytes != int64(expected) {
+		t.Errorf("expected size %d, got %d", expected, readResult.File.SizeBytes)
 	}
 }

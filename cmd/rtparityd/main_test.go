@@ -17,11 +17,11 @@ func TestLoadRuntimeStateRollsForwardReplayRequiredWrite(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	result, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/startup-replay.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/startup-replay.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
-		FailAfter:   journal.StateDataWritten,
+		SizeBytes:      4096,
+		FailAfter:      journal.StateDataWritten,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -145,10 +145,10 @@ func TestDiagnosticsEndpointReportsRecoveryState(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-diagnostics.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-diagnostics.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
+		SizeBytes:      4096,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -220,10 +220,10 @@ func TestReadEndpointReturnsVerificationResult(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	_, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-read.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-read.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
+		SizeBytes:      4096,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -253,10 +253,10 @@ func TestScrubEndpointReturnsRepairSummary(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-scrub.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-scrub.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
+		SizeBytes:      4096,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -299,10 +299,10 @@ func TestScrubHistoryEndpointReturnsPersistedRuns(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	_, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-scrub-history.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-scrub-history.bin",
 		AllowSynthetic: true,
-		SizeBytes:   4096,
+		SizeBytes:      4096,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -339,10 +339,10 @@ func TestRebuildEndpointRestoresMissingDataDiskExtent(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-rebuild.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-rebuild.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (1 << 20) + 64,
+		SizeBytes:      (1 << 20) + 64,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -381,10 +381,10 @@ func TestRebuildAllEndpointRestoresMultipleDisks(t *testing.T) {
 	coordinator := journal.NewCoordinator(metadataPath, journalPath)
 
 	writeResult, err := coordinator.WriteFile(journal.WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/shares/demo/http-rebuild-all.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/shares/demo/http-rebuild-all.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (3 << 20) + 99,
+		SizeBytes:      (3 << 20) + 99,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)

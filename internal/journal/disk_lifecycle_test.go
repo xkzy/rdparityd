@@ -44,10 +44,10 @@ func TestReplaceDiskReassignsExtents(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	result, err := coord.WriteFile(WriteRequest{
-		PoolName:    "demo",
-		LogicalPath: "/replace.bin",
+		PoolName:       "demo",
+		LogicalPath:    "/replace.bin",
 		AllowSynthetic: true,
-		SizeBytes:   (1 << 20) + 7,
+		SizeBytes:      (1 << 20) + 7,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile returned error: %v", err)
@@ -149,10 +149,10 @@ func TestConcurrentDiskLifecycleAndWritePaths(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, err := coord.WriteFile(WriteRequest{
-				PoolName:    "demo",
-				LogicalPath: fmt.Sprintf("/concurrent-%d.bin", i),
+				PoolName:       "demo",
+				LogicalPath:    fmt.Sprintf("/concurrent-%d.bin", i),
 				AllowSynthetic: true,
-				SizeBytes:   int64((i + 1) * 4096),
+				SizeBytes:      int64((i + 1) * 4096),
 			})
 			if err != nil {
 				errCh <- fmt.Errorf("write %d: %w", i, err)

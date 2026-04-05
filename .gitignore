@@ -2,3 +2,7 @@ bin/
 dist/
 *.out
 *.test
+.pi/
+.context/
+.claude
+.claude/

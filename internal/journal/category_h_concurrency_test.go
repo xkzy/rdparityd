@@ -152,26 +152,109 @@ func TestCategoryH_ConcurrentReadsWhileWriting(t *testing.T) {
 // - No hybrid corruption from multiple writers
 // - File readable with valid checksum
 func TestCategoryH_ConcurrentWriteToSameFile(t *testing.T) {
-	t.Skip("Category H not yet implemented: same-file write conflict detection")
-
-	// PSEUDOCODE:
-	// 1. Create coordinator
-	// 2. Launch 3 goroutines, all writing "/test/samefile.bin"
-	// 3. Each with different payload (payload_A, payload_B, payload_C)
-	// 4. Collect results from each write
-	// 5. Assert: exactly 1 write succeeded
-	// 6. Assert: other 2 writes failed with conflict/already-exists error
-	// 7. Read file back
-	// 8. Assert: file data matches exactly one of the 3 payloads
-	// 9. Assert: no hybrid data from multiple writers
-
 	root := t.TempDir()
-	_ = NewCoordinator(
+	coord := NewCoordinator(
 		filepath.Join(root, "metadata.json"),
 		filepath.Join(root, "journal.log"),
 	)
 
-	// Implementation to follow
+	const path = "/same-file/conflict.bin"
+	payloadA := bytes.Repeat([]byte("AAAA"), 2048)
+	payloadB := bytes.Repeat([]byte("BBBB"), 2048)
+	payloadC := bytes.Repeat([]byte("CCCC"), 2048)
+
+	var wg sync.WaitGroup
+	resultsCh := make(chan struct {
+		index   int
+		err     error
+		payload []byte
+	}, 3)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: path,
+			Payload:     payloadA,
+		})
+		resultsCh <- struct {
+			index   int
+			err     error
+			payload []byte
+		}{index: 0, err: err, payload: payloadA}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: path,
+			Payload:     payloadB,
+		})
+		resultsCh <- struct {
+			index   int
+			err     error
+			payload []byte
+		}{index: 1, err: err, payload: payloadB}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, err := coord.WriteFile(WriteRequest{
+			PoolName:    "demo",
+			LogicalPath: path,
+			Payload:     payloadC,
+		})
+		resultsCh <- struct {
+			index   int
+			err     error
+			payload []byte
+		}{index: 2, err: err, payload: payloadC}
+	}()
+
+	wg.Wait()
+	close(resultsCh)
+
+	var successCount int
+	var successPayload []byte
+
+	for result := range resultsCh {
+		if result.err == nil {
+			successCount++
+			successPayload = result.payload
+		}
+	}
+
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 successful write, got %d", successCount)
+	}
+
+	readResult, err := coord.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back failed: %v", err)
+	}
+
+	if !bytes.Equal(readResult.Data, successPayload) {
+		t.Fatal("final file data does not match the successful write payload")
+	}
+
+	if !readResult.Verified {
+		t.Fatal("expected verified read of written file")
+	}
+
+	state, err := coord.ReadMeta()
+	if err != nil {
+		t.Fatalf("ReadMeta failed: %v", err)
+	}
+	if len(state.Files) != 1 {
+		t.Fatalf("expected 1 file in metadata, got %d", len(state.Files))
+	}
+	if violations := CheckStateInvariants(state); len(violations) > 0 {
+		t.Fatalf("state invariants violated after same-file write conflict: %v", violations[0])
+	}
 }
 
 // TestCategoryH_WriteAndRepairRaceCondition verifies that concurrent write and

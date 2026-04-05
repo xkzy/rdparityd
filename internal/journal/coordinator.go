@@ -171,6 +171,11 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("load metadata state: %w", err)
 	}
+	for _, existing := range state.Files {
+		if existing.Path == req.LogicalPath {
+			return WriteResult{}, fmt.Errorf("file already exists: %s", req.LogicalPath)
+		}
+	}
 
 	startedAt := time.Now().UTC()
 	allocator := metadata.NewAllocator(&state)

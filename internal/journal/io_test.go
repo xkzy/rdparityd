@@ -245,8 +245,61 @@ func TestReadAheadCache(t *testing.T) {
 
 	cache.Prefetch(extents)
 
-	if _, ok := cache.Get(0); ok {
-		t.Error("cache should not have prefetched data yet")
+	if _, ok := cache.Get("ext-1"); ok {
+		t.Error("cache should not have data without Put")
+	}
+}
+
+func TestReadAheadCache_PutAndGet(t *testing.T) {
+	cache := NewReadAheadCache(8192, 4096)
+
+	cache.Put("ext-1", []byte("test data"))
+
+	got, ok := cache.Get("ext-1")
+	if !ok {
+		t.Fatal("expected to find cached data")
+	}
+	if string(got) != "test data" {
+		t.Errorf("got %q, want %q", string(got), "test data")
+	}
+}
+
+func TestReadAheadCache_MissingKey(t *testing.T) {
+	cache := NewReadAheadCache(8192, 4096)
+
+	if _, ok := cache.Get("nonexistent"); ok {
+		t.Error("expected cache miss for nonexistent key")
+	}
+}
+
+func TestReadAheadCache_Eviction(t *testing.T) {
+	cache := NewReadAheadCache(100, 50)
+
+	for i := 0; i < 10; i++ {
+		cache.Put(fmt.Sprintf("ext-%d", i), []byte(fmt.Sprintf("data-%d", i)))
+	}
+
+	if _, ok := cache.Get("ext-0"); ok {
+		t.Error("oldest entry should have been evicted")
+	}
+
+	if _, ok := cache.Get("ext-9"); !ok {
+		t.Error("newest entry should still be present")
+	}
+}
+
+func TestReadAheadCache_Overwrite(t *testing.T) {
+	cache := NewReadAheadCache(8192, 4096)
+
+	cache.Put("ext-1", []byte("first"))
+	cache.Put("ext-1", []byte("second"))
+
+	got, ok := cache.Get("ext-1")
+	if !ok {
+		t.Fatal("expected to find cached data")
+	}
+	if string(got) != "second" {
+		t.Errorf("got %q, want %q", string(got), "second")
 	}
 }
 

@@ -196,10 +196,29 @@ func verifyExtent(metadataPath string, journal *Store, state metadata.SampleStat
 	path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 	data, err := os.ReadFile(path)
 	if err == nil {
-		if int64(len(data)) == extent.Length && digestBytes(data) == extent.Checksum {
-			return append([]byte(nil), data...), false, nil
+		// Verify checksum against the stored checksum (which is computed on compressed data if compressed)
+		if digestBytes(data) == extent.Checksum {
+			// Data is valid - decompress if needed and return
+			if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
+				decompressed, err := decompress(data, CompressionAlg(extent.CompressionAlg))
+				if err != nil {
+					return nil, false, fmt.Errorf("decompress extent %s: %w", extent.ExtentID, err)
+				}
+				// Verify the decompressed size matches
+				if int64(len(decompressed)) != extent.Length {
+					return nil, false, fmt.Errorf("decompressed length mismatch for %s: committed=%d decompressed=%d", extent.ExtentID, extent.Length, len(decompressed))
+				}
+				return decompressed, false, nil
+			}
+			// No compression - verify length and return
+			if int64(len(data)) == extent.Length {
+				return append([]byte(nil), data...), false, nil
+			}
 		}
 		if !repair {
+			if extent.CompressionAlg != "" && extent.CompressionAlg != metadata.CompressionNone {
+				return nil, false, fmt.Errorf("extent checksum mismatch for %s (compressed)", extent.ExtentID)
+			}
 			if int64(len(data)) != extent.Length {
 				return nil, false, fmt.Errorf("extent length mismatch for %s: committed=%d disk=%d", extent.ExtentID, extent.Length, len(data))
 			}

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -363,5 +364,72 @@ func TestStress_RecoveryAfterManyWrites(t *testing.T) {
 	state, _ := coord2.ReadMeta()
 	if len(state.Files) != 50 {
 		t.Errorf("Expected 50 files, got %d", len(state.Files))
+	}
+}
+
+func TestStress_SoakWriteAndRecover(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping soak test in short mode")
+	}
+
+	dir := t.TempDir()
+	fileCount := 200
+
+	for round := 0; round < 3; round++ {
+		coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
+
+		for i := 0; i < fileCount; i++ {
+			path := fmt.Sprintf("/test/soak_r%d_%d.bin", round, i)
+			payload := []byte(fmt.Sprintf("round=%d iteration=%d data", round, i))
+			if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+				t.Fatalf("Round %d, WriteFile %d failed: %v", round, i, err)
+			}
+		}
+
+		state, err := coord.ReadMeta()
+		if err != nil {
+			t.Fatalf("ReadMeta failed: %v", err)
+		}
+		if len(state.Files) != fileCount*(round+1) {
+			t.Errorf("Round %d: expected %d files, got %d", round, fileCount*(round+1), len(state.Files))
+		}
+
+		coord2 := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
+		recovery, err := coord2.Recover()
+		if err != nil {
+			t.Fatalf("Recovery failed: %v", err)
+		}
+		if len(recovery.RecoveredTxIDs) != 0 {
+			t.Errorf("Round %d: expected 0 recovered, got %d", round, len(recovery.RecoveredTxIDs))
+		}
+	}
+}
+
+func TestStress_ContinuousReadWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping soak test in short mode")
+	}
+
+	dir := t.TempDir()
+	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
+
+	path := "/test/continuous.bin"
+	originalPayload := []byte("continuous test data")
+
+	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: originalPayload}); err != nil {
+		t.Fatalf("Initial WriteFile failed: %v", err)
+	}
+
+	for i := 0; i < 50; i++ {
+		result, err := coord.ReadFile(path)
+		if err != nil {
+			t.Fatalf("Iteration %d: ReadFile failed: %v", i, err)
+		}
+		if !result.Verified {
+			t.Errorf("Iteration %d: read not verified", i)
+		}
+		if string(result.Data) != string(originalPayload) {
+			t.Errorf("Iteration %d: data mismatch", i)
+		}
 	}
 }

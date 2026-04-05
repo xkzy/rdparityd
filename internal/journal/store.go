@@ -198,6 +198,55 @@ func (s *Store) Load() ([]Record, error) {
 	return records, nil
 }
 
+// CompactIfClean removes all journal records when every transaction in the
+// journal has reached a terminal state (committed or aborted). This is safe
+// because terminal transactions are fully reflected in the metadata snapshot;
+// no recovery action is needed for them. The compaction is atomic: the journal
+// is written to a temp file, synced, and renamed over the old file.
+//
+// CompactIfClean is a no-op when the journal is already empty, cannot be read,
+// or contains any incomplete transaction.
+func (s *Store) CompactIfClean() error {
+	records, err := s.Load()
+	if err != nil || len(records) == 0 {
+		return nil // empty or unreadable — nothing to compact
+	}
+
+	// Check that every transaction is in a terminal state.
+	txLastState := make(map[string]State)
+	for _, rec := range records {
+		txLastState[rec.TxID] = rec.State
+	}
+	for _, state := range txLastState {
+		if state != StateCommitted && state != StateAborted {
+			return nil // incomplete transaction present; do not compact
+		}
+	}
+
+	// All transactions terminal: safe to zero the journal.
+	// Use write-then-rename for crash-safety.
+	tmpPath := s.path + ".compact"
+	if err := ensureDir(filepath.Dir(s.path), 0o755); err != nil {
+		return fmt.Errorf("compaction: ensure journal dir: %w", err)
+	}
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("compaction: open temp journal: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("compaction: sync empty journal: %w", err)
+	}
+	f.Close()
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return fmt.Errorf("compaction: rename compact journal: %w", err)
+	}
+	if err := syncDir(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("compaction: sync journal directory: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Replay() (ReplaySummary, error) {
 	records, err := s.Load()
 	if err != nil {
@@ -420,7 +469,13 @@ func withDefaults(record Record) Record {
 //	[0:40]  prefix (magic, version, state, flags, timestamps, payloadLen, reserved)
 //	[40:72] BLAKE3-256(prefix + payload)
 func encodeRecord(record Record) ([]byte, error) {
+	if err := validateRecordEncodingLimits(record); err != nil {
+		return nil, err
+	}
 	payload := encodedPayload(record)
+	if len(payload) > int(^uint32(0))-recordHeaderSize {
+		return nil, fmt.Errorf("journal payload too large: %d bytes exceeds uint32 record limit", len(payload))
+	}
 
 	code, ok := stateToCode[record.State]
 	if !ok {
@@ -604,6 +659,47 @@ func decodePayload(data []byte) (Record, error) {
 }
 
 // ── binary helpers (journal-internal) ────────────────────────────────────────
+
+func validateRecordEncodingLimits(record Record) error {
+	checkStr := func(field, s string) error {
+		if len([]byte(s)) > 1<<16-1 {
+			return fmt.Errorf("%s too long for journal binary encoding: %d bytes > %d", field, len([]byte(s)), 1<<16-1)
+		}
+		return nil
+	}
+	checkCount := func(field string, n int) error {
+		if n > 1<<16-1 {
+			return fmt.Errorf("%s count too large for journal binary encoding: %d > %d", field, n, 1<<16-1)
+		}
+		return nil
+	}
+	if err := checkStr("tx_id", record.TxID); err != nil { return err }
+	if err := checkStr("pool_name", record.PoolName); err != nil { return err }
+	if err := checkStr("logical_path", record.LogicalPath); err != nil { return err }
+	if err := checkCount("affected_extent_ids", len(record.AffectedExtentIDs)); err != nil { return err }
+	for i, id := range record.AffectedExtentIDs {
+		if err := checkStr(fmt.Sprintf("affected_extent_ids[%d]", i), id); err != nil { return err }
+	}
+	if record.File != nil {
+		f := *record.File
+		if err := checkStr("file.file_id", f.FileID); err != nil { return err }
+		if err := checkStr("file.path", f.Path); err != nil { return err }
+		if err := checkStr("file.policy", f.Policy); err != nil { return err }
+		if err := checkStr("file.state", string(f.State)); err != nil { return err }
+	}
+	if err := checkCount("extents", len(record.Extents)); err != nil { return err }
+	for i, e := range record.Extents {
+		if err := checkStr(fmt.Sprintf("extents[%d].extent_id", i), e.ExtentID); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].file_id", i), e.FileID); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].data_disk_id", i), e.DataDiskID); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].relative_path", i), e.PhysicalLocator.RelativePath); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].checksum", i), e.Checksum); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].checksum_alg", i), e.ChecksumAlg); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].parity_group_id", i), e.ParityGroupID); err != nil { return err }
+		if err := checkStr(fmt.Sprintf("extents[%d].state", i), string(e.State)); err != nil { return err }
+	}
+	return nil
+}
 
 func jwriteStr(buf *bytes.Buffer, s string) {
 	b := []byte(s)

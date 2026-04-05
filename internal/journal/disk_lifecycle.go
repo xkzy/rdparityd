@@ -46,6 +46,11 @@ func (c *Coordinator) AddDisk(diskID, uuid string, role metadata.DiskRole, mount
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	diskID = strings.TrimSpace(diskID)
@@ -65,6 +70,9 @@ func (c *Coordinator) AddDisk(diskID, uuid string, role metadata.DiskRole, mount
 	case metadata.DiskRoleData, metadata.DiskRoleParity, metadata.DiskRoleMetadata:
 	default:
 		return fmt.Errorf("invalid disk role %q", role)
+	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
+		return err
 	}
 
 	state, err := c.loadState(metadata.PrototypeState("demo"))
@@ -109,6 +117,11 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID, newUUID string) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	oldDiskID = strings.TrimSpace(oldDiskID)
@@ -120,6 +133,9 @@ func (c *Coordinator) ReplaceDisk(oldDiskID, newDiskID, newUUID string) error {
 		return fmt.Errorf("old and new disk id must differ")
 	}
 	if err := validateDiskIdentity(newUUID); err != nil {
+		return err
+	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
 		return err
 	}
 
@@ -194,11 +210,19 @@ func (c *Coordinator) FailDisk(diskID string) error {
 	if c == nil {
 		return fmt.Errorf("coordinator is nil")
 	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	diskID = strings.TrimSpace(diskID)
 	if diskID == "" {
 		return fmt.Errorf("disk id is required")
+	}
+	if err := c.ensureRecoveredLocked("demo"); err != nil {
+		return err
 	}
 
 	state, err := c.loadState(metadata.PrototypeState("demo"))

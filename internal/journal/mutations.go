@@ -409,7 +409,9 @@ func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) (TruncateR
 	rootDir := filepath.Dir(c.metadataPath)
 	for _, ext := range toRemove {
 		extentPath := filepath.Join(rootDir, ext.PhysicalLocator.RelativePath)
-		_ = os.Remove(extentPath)
+		if err := os.Remove(extentPath); err != nil && !os.IsNotExist(err) {
+			return TruncateResult{}, fmt.Errorf("remove extent file: %w", err)
+		}
 	}
 
 	return TruncateResult{

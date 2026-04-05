@@ -8,6 +8,11 @@ import "time"
 // import.
 const ChecksumAlgorithm = "blake3"
 
+// DefaultExtentSize is the extent size used when Pool.ExtentSizeBytes is
+// unset or zero. 1 MiB balances metadata overhead, parity I/O cost, and
+// rebuild checkpoint granularity.
+const DefaultExtentSize = int64(1 << 20) // 1 MiB
+
 type Pool struct {
 	PoolID          string    `json:"pool_id"`
 	Name            string    `json:"name"`
@@ -133,7 +138,7 @@ func PrototypeState(name string) SampleState {
 			PoolID:          "pool-demo",
 			Name:            name,
 			Version:         "v1alpha1",
-			ExtentSizeBytes: 1 << 20,
+			ExtentSizeBytes: DefaultExtentSize,
 			ParityMode:      "single",
 			CreatedAt:       now,
 		},

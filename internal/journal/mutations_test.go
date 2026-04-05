@@ -209,3 +209,54 @@ func TestGrowFileBasic(t *testing.T) {
 		t.Errorf("expected size %d, got %d", expected, readResult.File.SizeBytes)
 	}
 }
+
+func TestDeleteFileBasic(t *testing.T) {
+	dir := t.TempDir()
+	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
+
+	path := "/test/delete_me.bin"
+	_, err := coord.WriteFile(WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    path,
+		AllowSynthetic: true,
+		SizeBytes:      1024,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	stateBefore, _ := coord.ReadMeta()
+	extentsBefore := len(stateBefore.Extents)
+
+	result, err := coord.DeleteFile(path)
+	if err != nil {
+		t.Fatalf("DeleteFile failed: %v", err)
+	}
+	if result.TxID == "" {
+		t.Error("expected non-empty txid")
+	}
+	if result.RemovedExtents == 0 {
+		t.Error("expected extents to be removed")
+	}
+
+	stateAfter, _ := coord.ReadMeta()
+	for _, f := range stateAfter.Files {
+		if f.Path == path {
+			t.Error("file still exists after delete")
+		}
+	}
+
+	if len(stateAfter.Extents) >= extentsBefore {
+		t.Error("extents not removed from metadata")
+	}
+}
+
+func TestDeleteFileNotFound(t *testing.T) {
+	dir := t.TempDir()
+	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
+
+	_, err := coord.DeleteFile("/nonexistent.bin")
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+}

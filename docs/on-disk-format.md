@@ -1,91 +1,106 @@
-# On-disk Metadata Format (v1 prototype)
+# On-disk Metadata Format (v1 - Production-Ready)
 
-## Layout
+## Overview
 
-### Data disk
+All persistence uses binary formats with explicit checksums:
+- **Magic identifiers**: `RTPJ` (journal), `RTPM` (metadata), `RBLD`/`SCRB` (rebuild/scrub progress)
+- **Checksum**: BLAKE3-256 everywhere (consistent across journal, metadata, parity, extents)
+- **Encoding**: Big-endian for all integer fields
+- **Atomic operations**: All writes use atomic replace (write tmp → fsync → rename → syncDir)
 
-```text
-/.rtparity/
-  disk.json
-  metadata-cache/
-    manifest-<generation>.json
-  logs/
-/data/
-  ...managed user content...
+## Journal format
+
+Magic: `RTPJ`, Version: 1
+
+Header (72 bytes):
+```
+[0:4]   Magic       [4]byte   "RTPJ"
+[4:6]   Version     uint16    1
+[6]     StateCode   uint8     see stateToCode/codeToState tables
+[7]     Flags       uint8     0 (reserved)
+[8:16]  Timestamp   int64     UnixNano, UTC
+[16:24] OldGen      int64
+[24:32] NewGen      int64
+[32:36] PayloadLen  uint32    byte length of variable payload section
+[36:40] Reserved    uint32    0
+[40:72] RecordHash  [32]byte  BLAKE3-256 of header[0:40] + payload
 ```
 
-### Parity disk
+Payload (variable):
+- `TxID`: uint16 length-prefixed byte slice
+- `PoolName`: uint16 length-prefixed byte slice
+- `LogicalPath`: uint16 length-prefixed byte slice
+- `File`: uint8 present flag + optional FileRecord binary encoding
+- `Extents`: uint16 count + repeated Extent binary encodings
+- `AffectedExtentIDs`: uint16 count + repeated uint16-length-prefixed strings
 
-```text
-/.rtparity/
-  parity-map.db
-  parity-checksums.json
-  tx-journal-cache/
-/parity/
-  group-<parity_group_id>.bin
+Torn-write detection: if fewer than PayloadLen bytes can be read after the length prefix, the record is silently dropped.
+
+## Metadata snapshot format
+
+Magic: `RTPM`, Version: 1
+
+Header (72 bytes):
+```
+[0:4]   Magic       [4]byte   "RTPM"
+[4:6]   Version     uint16    1
+[6:8]   Reserved    uint16    0
+[8:16]  SavedAt     int64     UnixNano, UTC
+[16:24] Generation  uint64    0 (reserved for future WAL integration)
+[24:28] PayloadLen  uint32    byte length of encoded SampleState
+[28:32] Reserved    uint32    0
+[32:40] Reserved    [8]byte   0
+[40:72] StateHash   [32]byte  BLAKE3-256(payload)
 ```
 
-### Metadata device
+Payload (variable):
+Binary encoding of SampleState — see `metadata.encodeState()` / `decodeState()`.
 
-```text
-/var/lib/rtparityd/
-  metadata.db
-  metadata.db-wal
-  journal.log
-  events.jsonl
+Atomic replace: Write to `<path>.tmp` → `fsync` → `rename` → `syncDir()`.
+
+## Extent file format
+
+Location: `data/<hash2>/<hash1>/extent-<id>.bin`
+
+Content: Raw bytes with BLAKE3-256 checksum stored in metadata (not in file).
+
+## Parity file format
+
+Location: `parity/group-<id>.bin`
+
+Content: Raw XOR parity bytes for the parity group.
+
+## Rebuild progress format
+
+Magic: `RBLD`, Header: 48 bytes
+
+```
+[0:4]   Magic       [4]byte   "RBLD"
+[4:6]   Version     uint16    1
+[6:8]   Reserved    uint16    0
+[8:16]  Timestamp   int64     UnixNano, UTC
+[16:24] DiskID      uint16-length-prefixed string
+[24:32] ExtentCount uint32
+[32:48] PayloadLen  uint32    byte length of encoded RebuildProgress
+[48:96] PayloadChecksum [32]byte  BLAKE3-256 of payload
 ```
 
-## Primary metadata store
+Atomic replace: Same pattern as metadata snapshot.
 
-The long-term design still targets a **SQLite/WAL-style metadata device**, but the current repository prototype now persists a **checksummed JSON metadata snapshot** so allocation and startup loading can be exercised immediately.
+## Scrub progress format
 
-Current prototype rules:
+Magic: `SCRB`, Header: 53 bytes
 
-- Snapshot stored at a configurable path such as `/tmp/rtparityd/metadata.json`.
-- The saved state includes a `state_checksum` over the full metadata document.
-- Loads fail closed if the checksum does not match.
-- Journaled write demos now emit real extent files under `data/...` and parity files under `parity/` relative to the snapshot directory.
-- Metadata snapshots are still intended to be copied to each data disk under `/.rtparity/metadata-cache/` for later recovery workflows.
-
-## Per-disk manifest
-
-Example `/.rtparity/disk.json`:
-
-```json
-{
-  "disk_id": "disk-01",
-  "uuid": "0b5e2c39-5a2d-4f93-9094-8d6672930f54",
-  "role": "data",
-  "filesystem_type": "xfs",
-  "mountpoint": "/mnt/data01",
-  "generation": 12,
-  "health_status": "online"
-}
+```
+[0:4]   Magic       [4]byte   "SCRB"
+[4:6]   Version     uint16    1
+[6:8]   Reserved    uint16    0
+[8:16]  Timestamp   int64     UnixNano, UTC
+[16:24] DiskID      uint16-length-prefixed string (optional)
+[24:32] RunID       uint16-length-prefixed string
+[32:40] Status      uint8     0=not started, 1=in progress, 2=complete, 3=failed
+[40:53] PayloadLen  uint32    byte length of encoded ScrubProgress
+[53:85] PayloadChecksum [32]byte  BLAKE3-256 of payload
 ```
 
-## Journal record envelope
-
-Each `journal.log` record is append-only and includes:
-
-- `magic`: record signature (`RTPJ`)
-- `version`: journal format version
-- `tx_id`: transaction identifier
-- `state`: `prepared`, `data-written`, `parity-written`, `metadata-written`, `committed`, or `aborted`
-- `old_generation` / `new_generation`
-- `affected_extent_ids`
-- `payload_checksum`
-- `record_checksum`
-
-## Extent locator format
-
-For the first prototype, a physical locator is represented as:
-
-```json
-{
-  "relative_path": "data/ab/cd/extent-000001.bin",
-  "offset_bytes": 0,
-  "length_bytes": 1048576
-}
-```
-
-That keeps data disks individually inspectable and readable with normal Linux tooling.
+Atomic replace: Same pattern as metadata snapshot.

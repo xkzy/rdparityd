@@ -306,9 +306,43 @@ func newMux(state *runtimeState) *http.ServeMux {
 		if len(scrubHistory) > 0 {
 			lastScrub = scrubHistory[len(scrubHistory)-1]
 		}
+
+		state.mu.RLock()
+		failedDisks := 0
+		parityIssues := 0
+		for _, disk := range state.Prototype.Disks {
+			if disk.HealthStatus != "online" {
+				failedDisks++
+			}
+		}
+		for _, group := range state.Prototype.ParityGroups {
+			if group.ParityChecksum == "" {
+				parityIssues++
+			}
+		}
+		state.mu.RUnlock()
+
+		scrubFailures := 0
+		rebuildFailures := 0
+		metadataIssues := 0
+		for i := len(scrubHistory) - 1; i >= 0 && scrubFailures+rebuildFailures < 10; i-- {
+			if scrubHistory[i].FailedCount > 0 {
+				scrubFailures++
+			}
+		}
+
+		alertLevel := "ok"
+		if failedDisks > 0 || parityIssues > 0 || scrubFailures > 0 {
+			alertLevel = "warning"
+		}
+		if startupError != "" {
+			alertLevel = "critical"
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"name":                    "rtparityd",
 			"status":                  status,
+			"alert_level":             alertLevel,
 			"version":                 "0.1.0-prototype",
 			"default_extent_bytes":    poolExtentSize,
 			"parity_mode":             poolParityMode,
@@ -321,6 +355,11 @@ func newMux(state *runtimeState) *http.ServeMux {
 			"journal_requires_replay": journalReplay,
 			"scrub_runs":              len(scrubHistory),
 			"last_scrub":              lastScrub,
+			"failed_disks":            failedDisks,
+			"parity_issues":           parityIssues,
+			"scrub_failures":          scrubFailures,
+			"rebuild_failures":        rebuildFailures,
+			"metadata_issues":         metadataIssues,
 			"timestamp":               time.Now().UTC(),
 			"started_at":              startedAt,
 			"startup_error":           startupError,

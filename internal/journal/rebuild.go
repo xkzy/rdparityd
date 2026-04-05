@@ -1,14 +1,148 @@
 package journal
 
+// rebuild.go — Phase 5: deterministic, checksum-verified, restartable rebuild.
+//
+// Rebuild guarantee:
+//   - Deterministic: extents are always processed in sorted (ParityGroupID,
+//     LogicalOffset) order so that the same extent is rebuilt on each run.
+//   - Checksum-verified: every reconstructed extent byte is verified against
+//     the checksum recorded in metadata before writing the rebuilt data to disk.
+//   - Restartable: a RebuildProgress record is written to disk after each
+//     extent is rebuilt. If the process is interrupted, the next call resumes
+//     from the last completed extent ID.
+//   - Safe under interruption: an incomplete rebuild leaves previously-rebuilt
+//     extents intact; un-rebuilt extents remain on the failed disk (or absent).
+
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"lukechampine.com/blake3"
+
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
+
+// ─── Progress persistence ────────────────────────────────────────────────────
+
+// RebuildProgress records the extent IDs that have been successfully rebuilt.
+// It is persisted to disk (binary format, BLAKE3 checksum) after each extent
+// is processed so that a restart can skip already-completed work.
+//
+// On-disk binary layout (big-endian):
+//
+//	[0:4]   Magic       "RBLD"
+//	[4:8]   Count       uint32   number of completed extent IDs
+//	[8:16]  Timestamp   int64    UnixNano of last update
+//	[16:48] Hash        [32]byte BLAKE3-256 of the payload section
+//	[48:]   Payload     count × (uint16 length + bytes)
+type RebuildProgress struct {
+	DiskID           string    `json:"disk_id"`
+	CompletedExtents []string  `json:"completed_extents"`
+	LastUpdated      time.Time `json:"last_updated"`
+}
+
+const (
+	rebuildProgressMagic = "RBLD"
+	rebuildProgressHdr   = 48 // magic(4) + count(4) + ts(8) + hash(32)
+)
+
+// progressPath returns the filesystem path for a rebuild progress file.
+func progressPath(metadataPath, diskID string) string {
+	return filepath.Join(filepath.Dir(metadataPath), "rebuild-"+diskID+".progress")
+}
+
+// saveRebuildProgress writes the progress record to disk and fsyncs it.
+func saveRebuildProgress(metadataPath string, progress RebuildProgress) error {
+	// Encode payload: count × (uint16 len + bytes).
+	var payload []byte
+	for _, id := range progress.CompletedExtents {
+		b := []byte(id)
+		lenBuf := make([]byte, 2)
+		binary.BigEndian.PutUint16(lenBuf, uint16(len(b)))
+		payload = append(payload, lenBuf...)
+		payload = append(payload, b...)
+	}
+
+	hdr := make([]byte, rebuildProgressHdr)
+	copy(hdr[0:4], rebuildProgressMagic)
+	binary.BigEndian.PutUint32(hdr[4:8], uint32(len(progress.CompletedExtents)))
+	binary.BigEndian.PutUint64(hdr[8:16], uint64(progress.LastUpdated.UnixNano()))
+	hash := blake3.Sum256(payload)
+	copy(hdr[16:48], hash[:])
+
+	data := append(hdr, payload...)
+	path := progressPath(metadataPath, progress.DiskID)
+	if err := writeSyncFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("save rebuild progress: %w", err)
+	}
+	// Fsync parent directory so the new file is durable.
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync rebuild progress directory: %w", err)
+	}
+	return nil
+}
+
+// loadRebuildProgress reads a previously saved progress file. Returns an empty
+// RebuildProgress (not an error) when no progress file exists yet.
+func loadRebuildProgress(metadataPath, diskID string) (RebuildProgress, error) {
+	path := progressPath(metadataPath, diskID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RebuildProgress{DiskID: diskID}, nil
+		}
+		return RebuildProgress{}, fmt.Errorf("read rebuild progress: %w", err)
+	}
+	if len(data) < rebuildProgressHdr {
+		return RebuildProgress{}, fmt.Errorf("rebuild progress file too short")
+	}
+	if string(data[0:4]) != rebuildProgressMagic {
+		return RebuildProgress{}, fmt.Errorf("rebuild progress: invalid magic")
+	}
+	count := int(binary.BigEndian.Uint32(data[4:8]))
+	tsNano := int64(binary.BigEndian.Uint64(data[8:16]))
+	storedHash := data[16:48]
+	payload := data[rebuildProgressHdr:]
+
+	computed := blake3.Sum256(payload)
+	if !bytes.Equal(computed[:], storedHash) {
+		return RebuildProgress{}, fmt.Errorf("rebuild progress: checksum mismatch")
+	}
+
+	completed := make([]string, 0, count)
+	pos := 0
+	for i := 0; i < count; i++ {
+		if pos+2 > len(payload) {
+			return RebuildProgress{}, fmt.Errorf("rebuild progress: truncated payload")
+		}
+		l := int(binary.BigEndian.Uint16(payload[pos : pos+2]))
+		pos += 2
+		if pos+l > len(payload) {
+			return RebuildProgress{}, fmt.Errorf("rebuild progress: truncated extent id")
+		}
+		completed = append(completed, string(payload[pos:pos+l]))
+		pos += l
+	}
+
+	return RebuildProgress{
+		DiskID:           diskID,
+		CompletedExtents: completed,
+		LastUpdated:      time.Unix(0, tsNano).UTC(),
+	}, nil
+}
+
+// deleteRebuildProgress removes the progress file after a successful rebuild.
+func deleteRebuildProgress(metadataPath, diskID string) {
+	_ = os.Remove(progressPath(metadataPath, diskID))
+}
+
+// ─── Rebuild types ───────────────────────────────────────────────────────────
 
 type RebuildIssue struct {
 	ExtentID      string `json:"extent_id,omitempty"`
@@ -24,9 +158,11 @@ type RebuildResult struct {
 	Healthy          bool           `json:"healthy"`
 	ExtentsScanned   int            `json:"extents_scanned"`
 	ExtentsRebuilt   int            `json:"extents_rebuilt"`
+	ExtentsSkipped   int            `json:"extents_skipped"`
 	FailedCount      int            `json:"failed_count"`
 	RebuiltExtentIDs []string       `json:"rebuilt_extent_ids,omitempty"`
 	Issues           []RebuildIssue `json:"issues,omitempty"`
+	Resumed          bool           `json:"resumed"`
 }
 
 type RebuildAllResult struct {
@@ -39,6 +175,11 @@ type RebuildAllResult struct {
 	Results        []RebuildResult `json:"results"`
 }
 
+// ─── Public API ──────────────────────────────────────────────────────────────
+
+// RebuildDataDisk reconstructs all extents on diskID from parity.
+// If a progress file from a previous (interrupted) rebuild exists, it resumes
+// from where the last run stopped.
 func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 	result := RebuildResult{
 		StartedAt: time.Now().UTC(),
@@ -59,6 +200,8 @@ func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 	return rebuildDiskFromState(c.metadataPath, state, result)
 }
 
+// RebuildAllDataDisks reconstructs extents on all data disks that have any
+// extents registered in metadata.
 func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 	result := RebuildAllResult{
 		StartedAt: time.Now().UTC(),
@@ -107,8 +250,12 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 	return result, nil
 }
 
+// ─── Internal ────────────────────────────────────────────────────────────────
+
 func rebuildDiskFromState(metadataPath string, state metadata.SampleState, result RebuildResult) (RebuildResult, error) {
 	rootDir := filepath.Dir(metadataPath)
+
+	// Collect and sort extents for this disk deterministically.
 	extents := make([]metadata.Extent, 0)
 	for _, extent := range state.Extents {
 		if extent.DataDiskID == result.DiskID {
@@ -119,6 +266,8 @@ func rebuildDiskFromState(metadataPath string, state metadata.SampleState, resul
 		return result, fmt.Errorf("no extents mapped to disk %s", result.DiskID)
 	}
 
+	// Deterministic ordering: (ParityGroupID, LogicalOffset) ensures the same
+	// processing order on every run and on resume.
 	sort.Slice(extents, func(i, j int) bool {
 		if extents[i].ParityGroupID == extents[j].ParityGroupID {
 			return extents[i].LogicalOffset < extents[j].LogicalOffset
@@ -126,8 +275,28 @@ func rebuildDiskFromState(metadataPath string, state metadata.SampleState, resul
 		return extents[i].ParityGroupID < extents[j].ParityGroupID
 	})
 
+	// Load any existing progress so we can skip already-rebuilt extents.
+	progress, err := loadRebuildProgress(metadataPath, result.DiskID)
+	if err != nil {
+		// Corrupt progress file: start over rather than silently skipping.
+		progress = RebuildProgress{DiskID: result.DiskID}
+	}
+	if len(progress.CompletedExtents) > 0 {
+		result.Resumed = true
+	}
+
+	completed := make(map[string]bool, len(progress.CompletedExtents))
+	for _, id := range progress.CompletedExtents {
+		completed[id] = true
+	}
+
 	result.ExtentsScanned = len(extents)
 	for _, extent := range extents {
+		if completed[extent.ExtentID] {
+			result.ExtentsSkipped++
+			continue
+		}
+
 		_, repaired, err := verifyExtent(rootDir, state, extent, true)
 		if err != nil {
 			result.FailedCount++
@@ -138,20 +307,45 @@ func rebuildDiskFromState(metadataPath string, state metadata.SampleState, resul
 				Status:        "failed",
 				Detail:        err.Error(),
 			})
+			// Do not add to completed; the next run will retry.
 			continue
 		}
+
 		if repaired {
+			// Verify the rebuilt extent matches its stored checksum before
+			// recording it as complete. verifyExtent already does this
+			// internally but we log it explicitly for audit purposes.
 			result.ExtentsRebuilt++
 			result.RebuiltExtentIDs = append(result.RebuiltExtentIDs, extent.ExtentID)
 			result.Issues = append(result.Issues, RebuildIssue{
 				ExtentID:      extent.ExtentID,
 				ParityGroupID: extent.ParityGroupID,
 				Status:        "rebuilt",
-				Detail:        "restored from parity",
+				Detail:        "restored from parity and checksum-verified",
+			})
+		}
+
+		// Persist progress after each extent so a crash can resume here.
+		progress.CompletedExtents = append(progress.CompletedExtents, extent.ExtentID)
+		progress.LastUpdated = time.Now().UTC()
+		if saveErr := saveRebuildProgress(metadataPath, progress); saveErr != nil {
+			// Non-fatal: log and continue. On restart the extent will be
+			// re-verified (idempotent).
+			result.Issues = append(result.Issues, RebuildIssue{
+				ExtentID: extent.ExtentID,
+				Status:   "progress-save-failed",
+				Detail:   saveErr.Error(),
 			})
 		}
 	}
 
 	result.CompletedAt = time.Now().UTC()
+
+	// Remove the progress file on a fully successful rebuild so the next run
+	// starts fresh.
+	if result.FailedCount == 0 {
+		deleteRebuildProgress(metadataPath, result.DiskID)
+	}
 	return result, nil
 }
+

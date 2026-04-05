@@ -128,3 +128,114 @@ func TestCoordinatorRebuildAllDataDisksRestoresMultipleMissingExtents(t *testing
 		}
 	}
 }
+
+// TestRebuildProgressPersistenceAndResume verifies that rebuild progress is
+// correctly saved, loaded, and used to skip already-rebuilt extents on the
+// next run (resume semantics).
+func TestRebuildProgressPersistenceAndResume(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	journalPath := filepath.Join(t.TempDir(), "journal.log")
+	coordinator := NewCoordinator(metadataPath, journalPath)
+
+	writeResult, err := coordinator.WriteFile(WriteRequest{
+		PoolName:    "demo",
+		LogicalPath: "/shares/demo/rebuild-resume.bin",
+		SizeBytes:   (2 << 20) + 1,
+	})
+	if err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	diskID := writeResult.Extents[0].DataDiskID
+
+	// Save a progress file claiming one extent is already done.
+	fakeCompleted := []string{writeResult.Extents[0].ExtentID}
+	progress := RebuildProgress{
+		DiskID:           diskID,
+		CompletedExtents: fakeCompleted,
+	}
+	if err := saveRebuildProgress(metadataPath, progress); err != nil {
+		t.Fatalf("saveRebuildProgress: %v", err)
+	}
+
+	// Load it back and verify round-trip fidelity.
+	loaded, err := loadRebuildProgress(metadataPath, diskID)
+	if err != nil {
+		t.Fatalf("loadRebuildProgress: %v", err)
+	}
+	if len(loaded.CompletedExtents) != 1 || loaded.CompletedExtents[0] != fakeCompleted[0] {
+		t.Fatalf("loaded progress mismatch: %#v", loaded)
+	}
+
+	// Delete an extent file so rebuild has real work to do for remaining extents.
+	for _, extent := range writeResult.Extents {
+		if extent.DataDiskID != diskID {
+			continue
+		}
+		// Only delete extents NOT in fakeCompleted so the skipping logic has
+		// extents to skip.
+		alreadyDone := false
+		for _, id := range fakeCompleted {
+			if id == extent.ExtentID {
+				alreadyDone = true
+				break
+			}
+		}
+		if alreadyDone {
+			continue
+		}
+		path := filepath.Join(filepath.Dir(metadataPath), extent.PhysicalLocator.RelativePath)
+		_ = os.Remove(path)
+	}
+
+	// Rebuild — it should resume, skip the pre-completed extent, and fix the rest.
+	result, err := coordinator.RebuildDataDisk(diskID)
+	if err != nil {
+		t.Fatalf("RebuildDataDisk (resume): %v", err)
+	}
+	if !result.Resumed {
+		t.Error("expected Resumed=true when progress file exists")
+	}
+	if result.ExtentsSkipped == 0 {
+		t.Error("expected at least one skipped extent on resume")
+	}
+
+	// After a fully successful rebuild the progress file should be gone.
+	if _, statErr := os.Stat(progressPath(metadataPath, diskID)); !os.IsNotExist(statErr) {
+		t.Error("expected progress file to be removed after successful rebuild")
+	}
+}
+
+// TestRebuildProgressChecksumRejection verifies that a tampered progress file
+// is detected and the rebuild starts from scratch.
+func TestRebuildProgressChecksumRejection(t *testing.T) {
+	metadataPath := filepath.Join(t.TempDir(), "metadata.json")
+	diskID := "disk-01"
+	path := progressPath(metadataPath, diskID)
+
+	// Write a valid progress file first.
+	prog := RebuildProgress{
+		DiskID:           diskID,
+		CompletedExtents: []string{"extent-abc"},
+	}
+	if err := saveRebuildProgress(metadataPath, prog); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Corrupt one byte of the payload.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(data) > rebuildProgressHdr {
+		data[rebuildProgressHdr] ^= 0xFF
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("corrupt write: %v", err)
+	}
+
+	// Load should return an error.
+	if _, err := loadRebuildProgress(metadataPath, diskID); err == nil {
+		t.Fatal("expected checksum error for corrupted progress file")
+	}
+}

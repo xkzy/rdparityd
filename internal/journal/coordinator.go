@@ -175,6 +175,16 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		return WriteResult{}, fmt.Errorf("append committed record: %w", err)
 	}
 	result.FinalState = StateCommitted
+
+	// Phase 3 — Enforce invariants: verify structural consistency immediately
+	// after commit. A violation here means the just-committed write left the
+	// storage system in an invalid state and must be surfaced immediately rather
+	// than discovered silently during a later read or scrub.
+	rootDir := filepath.Dir(c.metadataPath)
+	if violations := CheckIntegrityInvariants(rootDir, state); len(violations) > 0 {
+		return WriteResult{}, fmt.Errorf("invariant violation after commit: %v", violations[0])
+	}
+
 	return result, nil
 }
 
@@ -280,15 +290,28 @@ func mergeParityGroups(state *metadata.SampleState, extents []metadata.Extent) {
 // writeExtentFiles writes each extent's data to its physical location on disk.
 // When payload is non-nil, real user data is used; otherwise synthetic data is
 // written so demo and test commands remain functional without real input.
+//
+// Durability guarantee: each extent file is opened, written, fsynced, and
+// closed before control returns, and the parent directory is also fsynced so
+// that the directory entry (new file or updated inode) is durable.
 func writeExtentFiles(rootDir string, extents []metadata.Extent, payload []byte) error {
+	// Track unique parent directories so we fsync each only once.
+	dirs := make(map[string]struct{})
 	for _, extent := range extents {
 		targetPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		dir := filepath.Dir(targetPath)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("create extent directory for %s: %w", extent.ExtentID, err)
 		}
 
-		if err := os.WriteFile(targetPath, extentData(extent, payload), 0o600); err != nil {
+		if err := writeSyncFile(targetPath, extentData(extent, payload), 0o600); err != nil {
 			return fmt.Errorf("write extent file %s: %w", targetPath, err)
+		}
+		dirs[dir] = struct{}{}
+	}
+	for dir := range dirs {
+		if err := syncDir(dir); err != nil {
+			return fmt.Errorf("sync extent directory %s: %w", dir, err)
 		}
 	}
 	return nil
@@ -368,7 +391,9 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 		}
 		parityChecksum := digestBytes(parityData)
 		parityPath := filepath.Join(parityDir, groupID+".bin")
-		if err := os.WriteFile(parityPath, parityData, 0o600); err != nil {
+		// writeSyncFile fsyncs the parity file before returning, then we fsync
+		// the parity directory to make the new/updated entry durable.
+		if err := writeSyncFile(parityPath, parityData, 0o600); err != nil {
 			return fmt.Errorf("write parity file %s: %w", parityPath, err)
 		}
 		for i := range state.ParityGroups {
@@ -377,5 +402,43 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 			}
 		}
 	}
+	// Fsync the parity directory once after all parity files are written.
+	if err := syncDir(parityDir); err != nil {
+		return fmt.Errorf("sync parity directory: %w", err)
+	}
 	return nil
+}
+
+// writeSyncFile opens path, writes data, calls Sync() to flush to durable
+// storage, then closes the file. A crash after writeSyncFile returns cannot
+// lose the written bytes.
+func writeSyncFile(path string, data []byte, perm os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("open file for write: %w", err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("write data: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return fmt.Errorf("sync file: %w", err)
+	}
+	return f.Close()
+}
+
+// syncDir opens the directory at path and calls Sync() on it, ensuring that
+// any recently created or renamed files in the directory are durable. On Linux
+// this is required to guarantee that directory entries survive a power loss.
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open directory for sync: %w", err)
+	}
+	if err := d.Sync(); err != nil {
+		d.Close()
+		return fmt.Errorf("sync directory: %w", err)
+	}
+	return d.Close()
 }

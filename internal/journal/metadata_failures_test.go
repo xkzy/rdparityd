@@ -38,10 +38,10 @@ func writeAndCommit(t *testing.T, dir string, logicalPath string, payloadSize in
 	payload = makePayload(payloadSize, seed)
 	coord := NewCoordinator(metaPath, journalPath)
 	result, err := coord.WriteFile(WriteRequest{
-		PoolName:    "test-pool-g",
-		LogicalPath: logicalPath,
+		PoolName:       "test-pool-g",
+		LogicalPath:    logicalPath,
 		AllowSynthetic: true,
-		Payload:     payload,
+		Payload:        payload,
 	})
 	if err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -141,10 +141,10 @@ func TestG3_GenerationRollback(t *testing.T) {
 	// Do a second write to advance the generation.
 	coord2 := NewCoordinator(metaPath, journalPath)
 	_, err = coord2.WriteFile(WriteRequest{
-		PoolName:    "test-pool-g",
-		LogicalPath: "/test/g3b.bin",
+		PoolName:       "test-pool-g",
+		LogicalPath:    "/test/g3b.bin",
 		AllowSynthetic: true,
-		Payload:     makePayload(512, 33),
+		Payload:        makePayload(512, 33),
 	})
 	if err != nil {
 		t.Fatalf("second WriteFile: %v", err)
@@ -225,7 +225,7 @@ func TestG5_ReferencesUncommittedExtent(t *testing.T) {
 	_, err := coord2.WriteFile(WriteRequest{
 		PoolName:         "test-pool-g",
 		LogicalPath:      "/test/g5-uncommitted.bin",
-		AllowSynthetic: true,
+		AllowSynthetic:   true,
 		Payload:          makePayload(2<<20, 55),
 		extentWriteLimit: 1, // crash after writing first extent, before parity/metadata/commit
 	})

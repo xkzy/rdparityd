@@ -2,6 +2,7 @@ package journal
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -125,6 +126,9 @@ func runParityRepair(metadataPath string, journal *Store, state *metadata.Sample
 	if err := writeParityFiles(filepath.Dir(metadataPath), state, extents, 0); err != nil {
 		return false, fmt.Errorf("rewrite parity group %s: %w", groupID, err)
 	}
+	if err := verifyOnDiskParityAfterRepair(filepath.Dir(metadataPath), state, groupID); err != nil {
+		return false, fmt.Errorf("I4: post-repair parity readback failed for group %s: %w", groupID, err)
+	}
 	if _, err := journal.Append(withState(record, StateDataWritten)); err != nil {
 		return false, fmt.Errorf("append parity repair data-written record: %w", err)
 	}
@@ -231,4 +235,27 @@ func parityChecksumsChanged(before map[string]string, state metadata.SampleState
 		}
 	}
 	return false
+}
+
+func verifyOnDiskParityAfterRepair(rootDir string, state *metadata.SampleState, groupID string) error {
+	for _, group := range state.ParityGroups {
+		if group.ParityGroupID != groupID {
+			continue
+		}
+		if len(group.MemberExtentIDs) == 0 {
+			return nil
+		}
+		parityPath := filepath.Join(rootDir, "parity", groupID+".bin")
+		data, err := os.ReadFile(parityPath)
+		if err != nil {
+			return fmt.Errorf("read parity file for verification: %w", err)
+		}
+		checksum := digestBytes(data)
+		if checksum != group.ParityChecksum {
+			return fmt.Errorf("I4: parity checksum mismatch after repair: expected=%s got=%s",
+				group.ParityChecksum, checksum)
+		}
+		return nil
+	}
+	return nil
 }

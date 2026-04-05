@@ -180,15 +180,20 @@ func (c *Coordinator) OverwriteFile(logicalPath string, offset int64, data []byt
 	}
 
 	txID := generateTxID("tx-overwrite")
-	baseRecord := Record{
-		TxID:      txID,
-		PoolName:  state.Pool.Name,
-		Timestamp: time.Now().UTC(),
-		State:     StatePrepared,
-	}
-
+	fileCopy := *file
 	oldGen := int64(len(state.Transactions))
 	newGen := oldGen + 1
+	baseRecord := Record{
+		TxID:              txID,
+		PoolName:          state.Pool.Name,
+		Timestamp:         time.Now().UTC(),
+		State:             StatePrepared,
+		File:              &fileCopy,
+		Extents:           modifiedExtents,
+		OldGeneration:     oldGen,
+		NewGeneration:     newGen,
+		AffectedExtentIDs: extentIDs(modifiedExtents),
+	}
 
 	if _, err := c.journal.Append(baseRecord); err != nil {
 		return OverwriteResult{}, fmt.Errorf("append prepared record: %w", err)
@@ -220,6 +225,13 @@ func (c *Coordinator) OverwriteFile(logicalPath string, offset int64, data []byt
 			if state.Extents[i].ExtentID == ext.ExtentID {
 				state.Extents[i].Checksum = checksum
 				state.Extents[i].ChecksumAlg = ChecksumAlgorithm
+				break
+			}
+		}
+		for i := range baseRecord.Extents {
+			if baseRecord.Extents[i].ExtentID == ext.ExtentID {
+				baseRecord.Extents[i].Checksum = checksum
+				baseRecord.Extents[i].ChecksumAlg = ChecksumAlgorithm
 				break
 			}
 		}
@@ -255,12 +267,15 @@ func (c *Coordinator) OverwriteFile(logicalPath string, offset int64, data []byt
 
 	file.MTime = time.Now().UTC()
 
+	// Use split commit: saveStateSnapshot + journal.Append + publishCommittedState
+	// to satisfy invariant I1 (metadata durable before committed record).
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return OverwriteResult{}, fmt.Errorf("save metadata: %w", err)
+	}
 	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
 		return OverwriteResult{}, fmt.Errorf("append committed record: %w", err)
 	}
-	if _, err := c.commitState(state); err != nil {
-		return OverwriteResult{}, fmt.Errorf("save metadata: %w", err)
-	}
+	c.publishCommittedState(state)
 
 	return OverwriteResult{
 		TxID:    txID,
@@ -408,9 +423,19 @@ func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) (TruncateR
 		}
 	}
 
-	if _, err := c.commitState(state); err != nil {
+	if _, err := c.saveStateSnapshot(state); err != nil {
 		return TruncateResult{}, fmt.Errorf("save metadata: %w", err)
 	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return TruncateResult{}, fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
 
 	rootDir := filepath.Dir(c.metadataPath)
 	for _, ext := range toRemove {
@@ -473,11 +498,21 @@ func (c *Coordinator) DeleteFile(logicalPath string) (DeleteResult, error) {
 	}
 
 	if len(fileExtents) == 0 {
+		txID := generateTxID("tx-delete")
 		state.Files = append(state.Files[:fileIndex], state.Files[fileIndex+1:]...)
-		if _, err := c.commitState(state); err != nil {
+		if _, err := c.saveStateSnapshot(state); err != nil {
 			return DeleteResult{}, fmt.Errorf("save metadata: %w", err)
 		}
-		return DeleteResult{TxID: generateTxID("tx-delete"), RemovedExtents: 0, FreedBytes: 0}, nil
+		baseRecord := Record{
+			TxID:      txID,
+			State:     StatePrepared,
+			Timestamp: time.Now().UTC(),
+		}
+		if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+			return DeleteResult{}, fmt.Errorf("append committed record: %w", err)
+		}
+		c.publishCommittedState(state)
+		return DeleteResult{TxID: txID, RemovedExtents: 0, FreedBytes: 0}, nil
 	}
 
 	txID := generateTxID("tx-delete")
@@ -533,9 +568,19 @@ func (c *Coordinator) DeleteFile(logicalPath string) (DeleteResult, error) {
 		}
 	}
 
-	if _, err := c.commitState(state); err != nil {
+	if _, err := c.saveStateSnapshot(state); err != nil {
 		return DeleteResult{}, fmt.Errorf("save metadata: %w", err)
 	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return DeleteResult{}, fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
 
 	return DeleteResult{
 		TxID:           txID,
@@ -635,9 +680,19 @@ func (c *Coordinator) GrowFile(logicalPath string, appendData []byte) (GrowResul
 		return GrowResult{}, fmt.Errorf("write parity: %w", err)
 	}
 
-	if _, err := c.commitState(state); err != nil {
+	if _, err := c.saveStateSnapshot(state); err != nil {
 		return GrowResult{}, fmt.Errorf("save metadata: %w", err)
 	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return GrowResult{}, fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
 
 	return GrowResult{
 		TxID:    txID,

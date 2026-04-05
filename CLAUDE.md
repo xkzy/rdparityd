@@ -41,6 +41,18 @@ go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json
 
 # Run the daemon (rtparityd)
 go run ./cmd/rtparityd -listen :8080
+
+# Maintenance operations
+rtpctl trim -metadata-path=... -journal-path=...
+rtpctl defrag -metadata-path=... -journal-path=...
+rtpctl snapshot -name=mysnap -metadata-path=... -journal-path=...
+
+# Drive sleep management
+rtpctl enable-sleep -timeout=300 -min-active=60
+rtpctl disable-sleep
+rtpctl wake-disk -disk-id=disk-01
+rtpctl sleep-disk -disk-id=disk-01
+rtpctl sleep-status
 ```
 
 ### FUSE Mounting
@@ -65,6 +77,8 @@ go run ./cmd/rtpctl mount -mountpoint /tmp/rtparityd-mnt
   - `reader.go`: Read path with checksum verification and automatic repair
   - `scrub.go`: Periodic integrity checking and repair
   - `rebuild.go`: Single-disk recovery from parity
+  - `compression.go`: Compression support (zstd, lz4, snappy, gzip, xz)
+  - `maintenance_ops.go`: Trim, defrag, snapshot, and drive sleep operations
 
 - **`internal/metadata/`**: Metadata persistence
   - `store.go`: Metadata snapshot storage with BLAKE3 checksums
@@ -95,6 +109,32 @@ Each state transition is journaled before the corresponding disk write, enabling
 - **Checksum algorithm**: BLAKE3
 - **Metadata persistence**: Binary checksummed snapshots (magic `RTPM`, BLAKE3-256)
 - **Journal format**: Binary records with per-record BLAKE3 checksums
+- **Compression**: zstd, lz4, snappy, gzip, xz (optional per-extent)
+- **Filesystem type**: Per-pool (btrfs, ext4, xfs, etc.)
+
+### Production Readiness Guarantees
+
+**Durability (Phase 1)**
+- All journal appends: `file.Sync()` + `syncDir()`
+- All data writes: `replaceSyncFile()` (fsync + directory sync)
+- All parity writes: `replaceSyncFile()` (fsync + directory sync)
+- Metadata snapshot: `file.Sync()` + `syncDir()`
+- See `docs/durability.md` for full ordering
+
+**Crash Recovery (Phase 2)**
+- Journal replay at every startup
+- Idempotent recovery (safe to re-run)
+- `FailAfter` parameter for crash injection testing
+
+**Invariant Enforcement (Phase 3)**
+- Pre-commit: structural invariants (M1-M3, E2-E3, P1, P4)
+- Post-commit: targeted write integrity (E1, P2, P3)
+- Full pool: `CheckIntegrityInvariants()`
+
+**No Synthetic Data in Production (Phase 4)**
+- `Payload` required for real writes
+- `AllowSynthetic` only for tests/demos
+- Synthetic generates fake data that doesn't flow to parity
 
 ### Invariants
 
@@ -131,16 +171,29 @@ See `docs/CATEGORY_E_REBUILD_FAILURES.md` for an example of the test documentati
 
 All writes follow this durable protocol (from `coordinator.go`):
 
-1. Append `prepared` record to journal
-2. Write extent files to data disks
-3. Append `data-written` record
-4. Compute and write parity files
-5. Append `parity-written` record
-6. Update metadata snapshot
-7. Append `metadata-written` record
-8. Append `committed` record
+1. Append `prepared` record to journal (fsync + syncDir)
+2. Write extent files to data disks (fsync + syncDir)
+3. Append `data-written` record (fsync + syncDir)
+4. Compute and write parity files (fsync + syncDir)
+5. Append `parity-written` record (fsync + syncDir)
+6. Update metadata snapshot (fsync + syncDir)
+7. Append `metadata-written` record (fsync + syncDir)
+8. Append `committed` record (fsync + syncDir)
 
 Each step is fsync'd before advancing. If a crash occurs, recovery resumes from the last durable state.
+
+### Write Durability Ordering
+
+| Step | Action | fsync |
+|------|--------|-------|
+| 1 | Journal PREPARE | `file.Sync()` + `syncDir()` |
+| 2 | Write data extents | `replaceSyncFile()` |
+| 3 | Journal DATA_WRITTEN | `file.Sync()` + `syncDir()` |
+| 4 | Write parity files | `replaceSyncFile()` |
+| 5 | Journal PARITY_WRITTEN | `file.Sync()` + `syncDir()` |
+| 6 | Save metadata | `file.Sync()` + `syncDir()` |
+| 7 | Journal METADATA_WRITTEN | `file.Sync()` + `syncDir()` |
+| 8 | Journal COMMIT | `file.Sync()` + `syncDir()` |
 
 ### Read Path
 

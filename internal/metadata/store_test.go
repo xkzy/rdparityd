@@ -67,6 +67,23 @@ func TestStoreLoadRejectsTamperedSnapshot(t *testing.T) {
 	}
 }
 
+func TestStoreSaveLoadRoundTripOnFreshNestedPath(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(filepath.Join(root, "state", "snapshots", "metadata.bin"))
+	state := PrototypeState("nested")
+
+	if _, err := store.Save(state); err != nil {
+		t.Fatalf("Save returned error: %v", err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if loaded.Pool.Name != "nested" {
+		t.Fatalf("unexpected pool name: %q", loaded.Pool.Name)
+	}
+}
+
 func TestAllocatorUsesOnlineDataDisksAndSplitsByExtentSize(t *testing.T) {
 	state := PrototypeState("demo")
 	allocator := NewAllocator(&state)

@@ -59,8 +59,8 @@ go run ./cmd/rtpctl scrub-demo
 go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
 go run ./cmd/rtpctl rebuild-all-demo
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -full
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -full
 
 go run ./cmd/rtparityd -listen :8080
 curl http://127.0.0.1:8080/health
@@ -111,13 +111,13 @@ go run ./cmd/rtpctl write-demo -input-file /path/to/real.bin -path /shares/demo/
 ### Verify and self-heal a stored file on read
 
 ```bash
-go run ./cmd/rtpctl read-demo -metadata-path /tmp/rtparityd-metadata.json -path /shares/demo/write.bin
+go run ./cmd/rtpctl read-demo -metadata-path /tmp/rtparityd-metadata.bin -path /shares/demo/write.bin
 ```
 
 ### Scrub the full metadata snapshot for corruption
 
 ```bash
-go run ./cmd/rtpctl scrub-demo -metadata-path /tmp/rtparityd-metadata.json -repair=true
+go run ./cmd/rtpctl scrub-demo -metadata-path /tmp/rtparityd-metadata.bin -repair=true
 ```
 
 Or via the daemon API:
@@ -129,14 +129,14 @@ curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
 ### Inspect persisted scrub history
 
 ```bash
-go run ./cmd/rtpctl scrub-history -metadata-path /tmp/rtparityd-metadata.json
+go run ./cmd/rtpctl scrub-history -metadata-path /tmp/rtparityd-metadata.bin
 curl http://127.0.0.1:8080/v1/scrub/history
 ```
 
 ### Rebuild a missing data-disk extent from parity
 
 ```bash
-go run ./cmd/rtpctl rebuild-demo -metadata-path /tmp/rtparityd-metadata.json -disk disk-01
+go run ./cmd/rtpctl rebuild-demo -metadata-path /tmp/rtparityd-metadata.bin -disk disk-01
 ```
 
 Or via the daemon API:
@@ -148,7 +148,7 @@ curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
 ### Rebuild all data disks with missing extents
 
 ```bash
-go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.json
+go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.bin
 curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 ```
 
@@ -157,13 +157,13 @@ curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
 Verify all structural invariants (in-memory, no disk IO):
 
 ```bash
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -journal-path /tmp/rtparityd-journal.log
 ```
 
 Full integrity check including on-disk extent and parity data:
 
 ```bash
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.json -journal-path /tmp/rtparityd-journal.log -full
+go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -journal-path /tmp/rtparityd-journal.log -full
 ```
 
 See `docs/invariants.md` for the full invariant specification.
@@ -177,7 +177,7 @@ mkdir -p /mnt/pool
 # Mount (blocks until Ctrl-C or fusermount -u /mnt/pool).
 go run ./cmd/rtpctl mount \
   -mountpoint /mnt/pool \
-  -metadata-path /tmp/rtparityd/metadata.json \
+  -metadata-path /tmp/rtparityd/metadata.bin \
   -journal-path  /tmp/rtparityd/journal.log \
   -pool-name demo
 

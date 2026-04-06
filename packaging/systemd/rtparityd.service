@@ -1,38 +1,40 @@
 [Unit]
-Description=rtparityd storage engine
-Documentation=https://github.com/xkzy/rdparityd
-After=local-fs.target
+Description=rtparityd prototype storage daemon
+Documentation=man:rtparityd(8) man:rtparityd.conf(5)
+After=network.target local-fs.target
 Wants=local-fs.target
 
 [Service]
 Type=simple
 User=root
 Group=root
-ExecStart=/usr/local/bin/rtparityd \
-  -socket /var/run/rtparityd/rtparityd.sock \
-  -metadata-path /var/lib/rtparityd/metadata.bin \
-  -journal-path /var/lib/rtparityd/journal.bin \
-  -pool-name demo
-Restart=on-failure
-RestartSec=5
+ExecStart=/usr/sbin/rtparityd \
+    --socket=/var/run/rtparityd/rtparityd.sock \
+    --pid-file=/var/run/rtparityd/rtparityd.pid \
+    --config=/etc/rtparityd/rtparityd.conf \
+    --journal-path=/var/lib/rtparityd/journal.bin \
+    --metadata-path=/var/lib/rtparityd/metadata.bin
 
-# Runtime directories
+ExecStop=/bin/rm -f /var/run/rtparityd/rtparityd.sock /var/run/rtparityd/rtparityd.pid
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+
 RuntimeDirectory=rtparityd
 RuntimeDirectoryMode=0755
 
-# Storage directories
-RuntimeDirectoryMode=0755
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
+PrivateTmp=yes
+NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/rtparityd /var/run/rtparityd
+ProtectHome=read-only
+ReadWritePaths=/var/lib/rtparityd /var/log/rtparityd
 
-# Resource limits
-MemoryMax=1G
-MemoryHigh=512M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rtparityd
 
 [Install]
 WantedBy=multi-user.target

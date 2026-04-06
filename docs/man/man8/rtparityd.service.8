@@ -1,0 +1,101 @@
+.TH RTPARITYD.SERVICE 8 "April 2026" "rtparityd 0.1.0"
+.SH NAME
+rtparityd.service \- systemd service unit for rtparityd storage engine
+
+.SH SYNOPSIS
+/etc/systemd/system/rtparityd.service
+
+.SH DESCRIPTION
+\fBrtparityd.service\fR is a systemd unit file that starts the rtparityd
+storage engine daemon.
+
+The service runs as root by default and listens on the Unix socket at
+/var/run/rtparityd/rtparityd.sock for JSON-based command requests.
+
+.SH OPTIONS
+The service is configured with the following command-line arguments:
+
+.B \-socket
+Path to Unix socket (default: /var/run/rtparityd/rtparityd.sock)
+
+.B \-metadata-path
+Path to binary metadata snapshot (default: /var/lib/rtparityd/metadata.bin)
+
+.B \-journal-path
+Path to binary journal (default: /var/lib/rtparityd/journal.bin)
+
+.B \-pool-name
+Pool name (default: demo)
+
+.SH SECURITY
+The service includes the following security hardening options:
+
+.TP
+.B NoNewPrivileges=true
+Prevents privilege escalation.
+
+.TP
+.B PrivateTmp=true
+Uses private /tmp.
+
+.TP
+.B ProtectSystem=strict
+Read-only system directories.
+
+.TP
+.B ProtectHome=true
+Hides home directories.
+
+.TP
+.B ReadWritePaths
+Allows write access to /var/lib/rtparityd and /var/run/rtparityd only.
+
+.TP
+.B MemoryMax=1G
+Limits memory usage to 1GB.
+
+.SH USAGE
+.TP
+Start the service:
+.B systemctl start rtparityd
+
+.TP
+Stop the service:
+.B systemctl stop rtparityd
+
+.TP
+Enable on boot:
+.B systemctl enable rtparityd
+
+.TP
+Check status:
+.B systemctl status rtparityd
+
+.TP
+View logs:
+.B journalctl -u rtparityd
+
+.SH FILES
+.TP
+.B /usr/local/bin/rtparityd
+Daemon binary
+.TP
+.B /var/lib/rtparityd/
+Data directory
+.TP
+.B /var/run/rtparityd/
+Runtime directory
+.TP
+.B /var/run/rtparityd/rtparityd.sock
+Control socket
+
+.SH SEE ALSO
+.BR rtparityd (8),
+.BR rtparityd.conf (5),
+.BR rtparityctl (1)
+
+.SH AUTHOR
+Written by the rtparityd project.
+
+.SH LICENSE
+GNU General Public License version 2

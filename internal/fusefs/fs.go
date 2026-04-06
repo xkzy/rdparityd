@@ -42,6 +42,7 @@ package fusefs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -226,6 +227,14 @@ func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	for _, file := range state.Files {
 		if file.Path == childPath {
 			fillFileAttr(&out.Attr, file)
+			if file.FileType == metadata.FileTypeDirectory {
+				child := d.NewInode(ctx, &dirNode{
+					coord:    d.coord,
+					prefix:   childPath,
+					poolName: d.poolName,
+				}, fs.StableAttr{Mode: modeFromFile(file)})
+				return child, fs.OK
+			}
 			n := &fileNode{
 				coord:    d.coord,
 				path:     childPath,
@@ -308,11 +317,11 @@ func (d *dirNode) Create(
 	return child, fh, fuse.FOPEN_DIRECT_IO, fs.OK
 }
 
-// Mkdir creates a virtual directory.
+// Mkdir creates a directory.
 func (d *dirNode) Mkdir(
 	ctx context.Context,
 	name string,
-	_ uint32,
+	mode uint32,
 	out *fuse.EntryOut,
 ) (*fs.Inode, syscall.Errno) {
 	if strings.Contains(name, "\x00") {
@@ -326,8 +335,15 @@ func (d *dirNode) Mkdir(
 	}
 	childPrefix := d.fullPath(name)
 
+	if err := d.coord.CreateDirectory(childPrefix, mode); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil, syscall.EEXIST
+		}
+		return nil, syscall.EIO
+	}
+
 	now := uint64(time.Now().Unix())
-	out.Attr.Mode = syscall.S_IFDIR | 0o755
+	out.Attr.Mode = syscall.S_IFDIR | (mode & 0o7777)
 	out.Attr.Nlink = 2
 	out.Attr.Uid = uint32(os.Getuid())
 	out.Attr.Gid = uint32(os.Getgid())
@@ -338,7 +354,7 @@ func (d *dirNode) Mkdir(
 		coord:    d.coord,
 		prefix:   childPrefix,
 		poolName: d.poolName,
-	}, fs.StableAttr{Mode: syscall.S_IFDIR})
+	}, fs.StableAttr{Mode: syscall.S_IFDIR | (mode & 0o7777)})
 	return child, fs.OK
 }
 
@@ -381,7 +397,20 @@ func (d *dirNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 		return syscall.EIO
 	}
 
-	// Check if directory has children
+	var isDir bool
+	for _, file := range state.Files {
+		if file.Path == targetPath {
+			if file.FileType != metadata.FileTypeDirectory {
+				return syscall.ENOTDIR
+			}
+			isDir = true
+			break
+		}
+	}
+	if !isDir {
+		return syscall.ENOENT
+	}
+
 	dirPrefix := targetPath + "/"
 	for _, file := range state.Files {
 		if strings.HasPrefix(file.Path, dirPrefix) {
@@ -389,11 +418,14 @@ func (d *dirNode) Rmdir(ctx context.Context, name string) syscall.Errno {
 		}
 	}
 
-	// Check if it's actually a file
-	for _, file := range state.Files {
-		if file.Path == targetPath {
-			return syscall.ENOTDIR
+	if err := d.coord.DeleteDirectory(targetPath); err != nil {
+		if strings.Contains(err.Error(), "not empty") {
+			return syscall.ENOTEMPTY
 		}
+		if strings.Contains(err.Error(), "not found") {
+			return syscall.ENOENT
+		}
+		return syscall.EIO
 	}
 
 	return fs.OK
@@ -451,6 +483,13 @@ func (d *dirNode) Rename(ctx context.Context, oldName string, newParent fs.Inode
 func (d *dirNode) Symlink(ctx context.Context, target string, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	symlinkPath := d.fullPath(name)
 
+	if err := d.coord.CreateSymlink(symlinkPath, target, uint32(syscall.S_IFLNK|0o777)); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil, syscall.EEXIST
+		}
+		return nil, syscall.EIO
+	}
+
 	now := time.Now()
 	fakeFile := metadata.FileRecord{
 		Path:       symlinkPath,
@@ -478,6 +517,16 @@ func (d *dirNode) Mknod(ctx context.Context, name string, mode uint32, dev uint3
 	nodePath := d.fullPath(name)
 
 	fileType := metadata.FileTypeFromMode(mode)
+	devMajor := dev >> 8
+	devMinor := dev & 0xff
+
+	if err := d.coord.CreateSpecialFile(nodePath, mode, devMajor, devMinor); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return nil, syscall.EEXIST
+		}
+		return nil, syscall.EIO
+	}
+
 	now := time.Now()
 	fakeFile := metadata.FileRecord{
 		Path:      nodePath,
@@ -486,6 +535,8 @@ func (d *dirNode) Mknod(ctx context.Context, name string, mode uint32, dev uint3
 		CTime:     now,
 		FileType:  fileType,
 		Mode:      mode,
+		DevMajor:  devMajor,
+		DevMinor:  devMinor,
 	}
 
 	switch fileType {
@@ -495,12 +546,8 @@ func (d *dirNode) Mknod(ctx context.Context, name string, mode uint32, dev uint3
 		fakeFile.Mode = mode | syscall.S_IFSOCK
 	case metadata.FileTypeBlockDevice:
 		fakeFile.Mode = mode | syscall.S_IFBLK
-		fakeFile.DevMajor = dev >> 8
-		fakeFile.DevMinor = dev & 0xff
 	case metadata.FileTypeCharDevice:
 		fakeFile.Mode = mode | syscall.S_IFCHR
-		fakeFile.DevMajor = dev >> 8
-		fakeFile.DevMinor = dev & 0xff
 	}
 
 	fillFileAttr(&out.Attr, fakeFile)
@@ -521,16 +568,17 @@ func (d *dirNode) Link(ctx context.Context, node fs.InodeEmbedder, name string, 
 	existing := node.(*fileNode)
 	hardLinkPath := d.fullPath(name)
 
-	state, err := d.coord.ReadMeta()
-	if err != nil {
-		return nil, syscall.EIO
-	}
-
-	// Check destination doesn't exist
-	for _, file := range state.Files {
-		if file.Path == hardLinkPath {
+	if err := d.coord.CreateHardLink(existing.path, hardLinkPath); err != nil {
+		if strings.Contains(err.Error(), "already exists") {
 			return nil, syscall.EEXIST
 		}
+		if strings.Contains(err.Error(), "not found") {
+			return nil, syscall.ENOENT
+		}
+		if strings.Contains(err.Error(), "cannot hard link") {
+			return nil, syscall.EPERM
+		}
+		return nil, syscall.EIO
 	}
 
 	fillFileAttr(&out.Attr, existing.file)
@@ -547,6 +595,40 @@ func (d *dirNode) Link(ctx context.Context, node fs.InodeEmbedder, name string, 
 
 // Setattr sets directory attributes.
 func (d *dirNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	if mode, ok := in.GetMode(); ok {
+		if err := d.coord.SetFileMode(d.prefix, mode); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return syscall.ENOENT
+			}
+			return syscall.EIO
+		}
+	}
+
+	if atime, ok := in.GetATime(); ok {
+		if mtime, ok2 := in.GetMTime(); ok2 {
+			if err := d.coord.SetFileTimes(d.prefix, atime, mtime); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					return syscall.ENOENT
+				}
+				return syscall.EIO
+			}
+		} else {
+			if err := d.coord.SetFileTimes(d.prefix, atime, atime); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					return syscall.ENOENT
+				}
+				return syscall.EIO
+			}
+		}
+	} else if mtime, ok := in.GetMTime(); ok {
+		if err := d.coord.SetFileTimes(d.prefix, mtime, mtime); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return syscall.ENOENT
+			}
+			return syscall.EIO
+		}
+	}
+
 	return d.Getattr(ctx, fh, out)
 }
 
@@ -628,9 +710,40 @@ func (f *fileNode) Setattr(_ context.Context, fh fs.FileHandle, in *fuse.SetAttr
 		}
 	}
 
-	// Handle mode changes - just acknowledge, don't persist
-	if _, ok := in.GetMode(); ok {
-		// Mode changes would need a SetFileMode coordinator method
+	// Handle mode changes
+	if mode, ok := in.GetMode(); ok {
+		if err := f.coord.SetFileMode(f.path, mode); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return syscall.ENOENT
+			}
+			return syscall.EIO
+		}
+	}
+
+	// Handle time changes
+	if atime, ok := in.GetATime(); ok {
+		if mtime, ok2 := in.GetMTime(); ok2 {
+			if err := f.coord.SetFileTimes(f.path, atime, mtime); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					return syscall.ENOENT
+				}
+				return syscall.EIO
+			}
+		} else {
+			if err := f.coord.SetFileTimes(f.path, atime, atime); err != nil {
+				if strings.Contains(err.Error(), "not found") {
+					return syscall.ENOENT
+				}
+				return syscall.EIO
+			}
+		}
+	} else if mtime, ok := in.GetMTime(); ok {
+		if err := f.coord.SetFileTimes(f.path, mtime, mtime); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				return syscall.ENOENT
+			}
+			return syscall.EIO
+		}
 	}
 
 	f.Getattr(nil, fh, out)
@@ -664,6 +777,7 @@ func (f *fileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32,
 	// Read-only
 	result, err := f.coord.ReadFile(f.path)
 	if err != nil {
+		fmt.Printf("Open ReadFile error: path=%s error=%v\n", f.path, err)
 		return nil, 0, syscall.EIO
 	}
 	fh := &fileHandle{
@@ -799,12 +913,7 @@ func (h *fileHandle) Flush(_ context.Context) syscall.Errno {
 	payload := make([]byte, len(h.data))
 	copy(payload, h.data)
 
-	_, err := h.coord.WriteFile(context.Background(), journal.WriteRequest{
-		PoolName:    h.poolName,
-		LogicalPath: h.path,
-		Payload:     payload,
-	})
-	if err != nil {
+	if err := h.coord.SaveFileData(h.path, payload); err != nil {
 		return syscall.EIO
 	}
 	h.flushed = true

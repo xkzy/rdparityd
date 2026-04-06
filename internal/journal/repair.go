@@ -227,12 +227,13 @@ func rollForwardRepair(metadataPath string, journal *Store, state *metadata.Samp
 			last.State = StateDataWritten
 		}
 		if last.State == StateDataWritten || last.State == StateReplayRequired {
+			groupIndex := make(map[string]metadata.ParityGroup, len(state.ParityGroups))
 			for _, group := range state.ParityGroups {
-				if group.ParityGroupID == groupID {
-					if err := verifyParityGroup(filepath.Dir(metadataPath), group); err != nil {
-						return false, fmt.Errorf("verify parity group %s during repair replay: %w", groupID, err)
-					}
-					break
+				groupIndex[group.ParityGroupID] = group
+			}
+			if group, ok := groupIndex[groupID]; ok {
+				if err := verifyParityGroup(filepath.Dir(metadataPath), group); err != nil {
+					return false, fmt.Errorf("verify parity group %s during repair replay: %w", groupID, err)
 				}
 			}
 			if _, err := journal.Append(withState(last, StateCommitted)); err != nil {

@@ -201,6 +201,40 @@ func (c *Coordinator) ensureRecoveredLocked(fallbackPoolName string) error {
 	return nil
 }
 
+// EnsureInitialized ensures that the coordinator state is properly initialized
+// with a valid pool. This should be called before any mutations, typically
+// during mount setup.
+func (c *Coordinator) EnsureInitialized(poolName string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(poolName); err != nil {
+		return err
+	}
+
+	if c.cachedStateSet && c.cachedState != nil && c.cachedState.Pool.Name != "" {
+		return nil
+	}
+
+	// Check if metadata file exists - if so, load it instead of overwriting
+	if existingState, err := c.metadata.Load(); err == nil && existingState.Pool.Name != "" {
+		c.cachedState = &existingState
+		c.cachedStateSet = true
+		return nil
+	}
+
+	// No existing state, initialize with prototype
+	state := metadata.PrototypeState(poolName)
+	env, err := c.metadata.Save(state)
+	if err != nil {
+		return err
+	}
+	_ = env
+	c.cachedState = &state
+	c.cachedStateSet = true
+	return nil
+}
+
 // resolveDiskMountpoint finds the mountpoint for diskID from state and validates
 // it is usable. Returns rootDir if the disk has no mountpoint or the mountpoint
 // is invalid/inaccessible.

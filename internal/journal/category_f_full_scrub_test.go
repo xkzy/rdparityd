@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func TestCategoryF_FullScrubHealthyPool(t *testing.T) {
 
 	for i := 0; i < numFiles; i++ {
 		payloads[i] = bytes.Repeat([]byte{byte('A' + i)}, (1<<20)+(i*13579))
-		result, err := coord.WriteFile(WriteRequest{
+		result, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: fmt.Sprintf("/scrub/healthy-%d.bin", i),
 			Payload:     payloads[i],
@@ -121,7 +122,7 @@ func TestCategoryF_ScrubDetectsMultipleCorruptedExtents(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		payload := bytes.Repeat([]byte{byte('a' + i)}, (2<<20)+(i*97)+123)
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: fmt.Sprintf("/scrub/multi-%02d.bin", i),
 			Payload:     payload,
@@ -231,7 +232,7 @@ func TestCategoryF_ScrubRepairsAllDetectedCorruptions(t *testing.T) {
 		path := fmt.Sprintf("/scrub/repair-%02d.bin", i)
 		payload := bytes.Repeat([]byte{byte('k' + i)}, (2<<20)+(i*211)+321)
 		payloads[path] = payload
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payload,
@@ -364,7 +365,7 @@ func TestCategoryF_ScrubInterruptionAndResumption(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/scrub/resume.bin",
 		AllowSynthetic: true,
@@ -447,7 +448,7 @@ func TestCategoryF_ScrubWithAuditOnlyMode(t *testing.T) {
 	)
 
 	originalPayload := bytes.Repeat([]byte("X"), (1<<20)+5432)
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/audit/test.bin",
 		Payload:     originalPayload,
@@ -536,7 +537,7 @@ func TestCategoryF_ScrubPersistsHistoryAndStats(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("history-scrub-"), 200000)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/scrub/history.bin",
 		Payload:     payload,
@@ -675,7 +676,7 @@ func TestCategoryF_ScrubDetectsPartialFileCorruption(t *testing.T) {
 
 	path := "/scrub/partial-file.bin"
 	payload := bytes.Repeat([]byte("partial-file-"), 260000)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: path,
 		Payload:     payload,
@@ -822,7 +823,7 @@ func TestCategoryF_ScrubRepairsParityCorruptionAcrossGroups(t *testing.T) {
 		path := fmt.Sprintf("/scrub/parity-%02d.bin", i)
 		payload := bytes.Repeat([]byte{byte('p' + i)}, (2<<20)+(i*173)+257)
 		payloads[path] = payload
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payload,
@@ -1003,14 +1004,14 @@ func TestCategoryF_ScrubAcrossMultiplePoolsIsolated(t *testing.T) {
 	payloadA := bytes.Repeat([]byte("pool-a-"), 200000)
 	payloadB := bytes.Repeat([]byte("pool-b-"), 200000)
 
-	if _, err := coordA.WriteFile(WriteRequest{
+	if _, err := coordA.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "poolA",
 		LogicalPath: "/data/fileA.bin",
 		Payload:     payloadA,
 	}); err != nil {
 		t.Fatalf("pool A write failed: %v", err)
 	}
-	if _, err := coordB.WriteFile(WriteRequest{
+	if _, err := coordB.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "poolB",
 		LogicalPath: "/data/fileB.bin",
 		Payload:     payloadB,
@@ -1107,7 +1108,7 @@ func TestCategoryF_ScrubProgressReporting(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/scrub/progress.bin",
 		AllowSynthetic: true,
@@ -1200,7 +1201,7 @@ func TestCategoryF_ScrubRepairDoesntCorruptHealthyExtents(t *testing.T) {
 		path := fmt.Sprintf("/scrub/safety-%d.bin", i)
 		payload := bytes.Repeat([]byte{byte('s' + i)}, (1<<20)+(i*151)+89)
 		originalPayloads[path] = payload
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payload,

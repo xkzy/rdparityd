@@ -11,6 +11,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +25,7 @@ func crashAndRecover(t *testing.T, dir string, logicalPath string, payload []byt
 	t.Helper()
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    logicalPath,
 		AllowSynthetic: true,
@@ -125,7 +126,7 @@ func TestA4_CrashMidDataWriteExtentLimit1(t *testing.T) {
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 	payload := makePayload((1<<20)+100, 17)
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a4.bin",
 		AllowSynthetic:   true,
@@ -176,7 +177,7 @@ func TestA7_CrashMidParityWriteParityLimit1(t *testing.T) {
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 	payload := makePayload((2<<20)+100, 23)
-	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a7.bin",
 		AllowSynthetic:   true,
@@ -257,7 +258,7 @@ func TestA12_StateTransitionMetadataWrittenToCommitted(t *testing.T) {
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 	payload := makePayload((1<<20)+400, 41)
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/shares/test/a12.bin",
 		AllowSynthetic: true,
@@ -353,7 +354,7 @@ func TestAllCategoryACrashPoints(t *testing.T) {
 			metadataPath := filepath.Join(dir, "metadata.json")
 			journalPath := filepath.Join(dir, "journal.log")
 			payload := makePayload(tc.payloadLen, 53)
-			_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+			_, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 				PoolName:       "demo",
 				LogicalPath:    "/shares/test/" + tc.name + ".bin",
 				AllowSynthetic: true,
@@ -398,7 +399,7 @@ func TestA_RecoveryIdempotentAfterCrash(t *testing.T) {
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 	payload := makePayload((1<<20)+100, 59)
-	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/shares/test/idempotent.bin",
 		AllowSynthetic: true,
@@ -439,7 +440,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 	basePayload := makePayload((1 << 20), 61)
-	baseResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	baseResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/shares/multi/base.bin",
 		AllowSynthetic: true,
@@ -449,7 +450,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 		t.Fatalf("baseline WriteFile: err=%v state=%s", err, baseResult.FinalState)
 	}
 	payloadA := makePayload((1<<20)+100, 67)
-	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/shares/multi/a.bin",
 		AllowSynthetic: true,
@@ -460,7 +461,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 		t.Fatalf("crash write A: %v", err)
 	}
 	payloadB := makePayload((1<<20)+200, 71)
-	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/shares/multi/b.bin",
 		AllowSynthetic: true,

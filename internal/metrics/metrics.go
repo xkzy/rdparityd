@@ -18,6 +18,8 @@
 package metrics
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,29 +143,42 @@ type Recorder struct {
 	ActiveWrites *Gauge
 	ActiveReads  *Gauge
 
+	DiskErrors  *Counter
+	DiskLatency *Histogram
+
+	ConnectionsAccepted *Counter
+	CommandsProcessed   *Counter
+
+	ActiveConnections *Gauge
+
 	startTime time.Time
 	startedAt int64
 }
 
 var global = &Recorder{
-	WriteOps:        &Counter{},
-	WriteErrors:     &Counter{},
-	WriteLatency:    NewHistogram(nil),
-	ReadOps:         &Counter{},
-	ReadErrors:      &Counter{},
-	ReadLatency:     NewHistogram(nil),
-	ScrubOps:        &Counter{},
-	ScrubErrors:     &Counter{},
-	ScrubLatency:    NewHistogram(nil),
-	RebuildOps:      &Counter{},
-	RebuildErrors:   &Counter{},
-	RebuildLatency:  NewHistogram(nil),
-	RecoverOps:      &Counter{},
-	RecoverErrors:   &Counter{},
-	RecoveryLatency: NewHistogram(nil),
-	ActiveWrites:    &Gauge{},
-	ActiveReads:     &Gauge{},
-	startTime:       time.Now(),
+	WriteOps:            &Counter{},
+	WriteErrors:         &Counter{},
+	WriteLatency:        NewHistogram(nil),
+	ReadOps:             &Counter{},
+	ReadErrors:          &Counter{},
+	ReadLatency:         NewHistogram(nil),
+	ScrubOps:            &Counter{},
+	ScrubErrors:         &Counter{},
+	ScrubLatency:        NewHistogram(nil),
+	RebuildOps:          &Counter{},
+	RebuildErrors:       &Counter{},
+	RebuildLatency:      NewHistogram(nil),
+	RecoverOps:          &Counter{},
+	RecoverErrors:       &Counter{},
+	RecoveryLatency:     NewHistogram(nil),
+	ActiveWrites:        &Gauge{},
+	ActiveReads:         &Gauge{},
+	DiskErrors:          &Counter{},
+	DiskLatency:         NewHistogram(nil),
+	ConnectionsAccepted: &Counter{},
+	CommandsProcessed:   &Counter{},
+	ActiveConnections:   &Gauge{},
+	startTime:           time.Now(),
 }
 
 func Global() *Recorder {
@@ -192,24 +207,27 @@ func (r *Recorder) Reset() {
 }
 
 type Snapshot struct {
-	WriteOps        uint64        `json:"write_ops"`
-	WriteErrors     uint64        `json:"write_errors"`
-	WriteLatency    histogramSnap `json:"write_latency_ms"`
-	ReadOps         uint64        `json:"read_ops"`
-	ReadErrors      uint64        `json:"read_errors"`
-	ReadLatency     histogramSnap `json:"read_latency_ms"`
-	ScrubOps        uint64        `json:"scrub_ops"`
-	ScrubErrors     uint64        `json:"scrub_errors"`
-	ScrubLatency    histogramSnap `json:"scrub_latency_ms"`
-	RebuildOps      uint64        `json:"rebuild_ops"`
-	RebuildErrors   uint64        `json:"rebuild_errors"`
-	RebuildLatency  histogramSnap `json:"rebuild_latency_ms"`
-	RecoverOps      uint64        `json:"recover_ops"`
-	RecoverErrors   uint64        `json:"recover_errors"`
-	RecoveryLatency histogramSnap `json:"recovery_latency_ms"`
-	ActiveWrites    int64         `json:"active_writes"`
-	ActiveReads     int64         `json:"active_reads"`
-	UptimeSec       int64         `json:"uptime_seconds"`
+	WriteOps            uint64        `json:"write_ops"`
+	WriteErrors         uint64        `json:"write_errors"`
+	WriteLatency        histogramSnap `json:"write_latency_ms"`
+	ReadOps             uint64        `json:"read_ops"`
+	ReadErrors          uint64        `json:"read_errors"`
+	ReadLatency         histogramSnap `json:"read_latency_ms"`
+	ScrubOps            uint64        `json:"scrub_ops"`
+	ScrubErrors         uint64        `json:"scrub_errors"`
+	ScrubLatency        histogramSnap `json:"scrub_latency_ms"`
+	RebuildOps          uint64        `json:"rebuild_ops"`
+	RebuildErrors       uint64        `json:"rebuild_errors"`
+	RebuildLatency      histogramSnap `json:"rebuild_latency_ms"`
+	RecoverOps          uint64        `json:"recover_ops"`
+	RecoverErrors       uint64        `json:"recover_errors"`
+	RecoveryLatency     histogramSnap `json:"recovery_latency_ms"`
+	ActiveWrites        int64         `json:"active_writes"`
+	ActiveReads         int64         `json:"active_reads"`
+	ActiveConnections   int64         `json:"active_connections"`
+	ConnectionsAccepted uint64        `json:"connections_accepted"`
+	CommandsProcessed   uint64        `json:"commands_processed"`
+	UptimeSec           int64         `json:"uptime_seconds"`
 }
 
 type histogramSnap struct {
@@ -225,24 +243,27 @@ func (r *Recorder) Snapshot() Snapshot {
 	}
 
 	return Snapshot{
-		WriteOps:        r.WriteOps.Value(),
-		WriteErrors:     r.WriteErrors.Value(),
-		WriteLatency:    histogramSnap{r.WriteLatency.Buckets(), r.WriteLatency.Counts()},
-		ReadOps:         r.ReadOps.Value(),
-		ReadErrors:      r.ReadErrors.Value(),
-		ReadLatency:     histogramSnap{r.ReadLatency.Buckets(), r.ReadLatency.Counts()},
-		ScrubOps:        r.ScrubOps.Value(),
-		ScrubErrors:     r.ScrubErrors.Value(),
-		ScrubLatency:    histogramSnap{r.ScrubLatency.Buckets(), r.ScrubLatency.Counts()},
-		RebuildOps:      r.RebuildOps.Value(),
-		RebuildErrors:   r.RebuildErrors.Value(),
-		RebuildLatency:  histogramSnap{r.RebuildLatency.Buckets(), r.RebuildLatency.Counts()},
-		RecoverOps:      r.RecoverOps.Value(),
-		RecoverErrors:   r.RecoverErrors.Value(),
-		RecoveryLatency: histogramSnap{r.RecoveryLatency.Buckets(), r.RecoveryLatency.Counts()},
-		ActiveWrites:    r.ActiveWrites.Value(),
-		ActiveReads:     r.ActiveReads.Value(),
-		UptimeSec:       uptime,
+		WriteOps:            r.WriteOps.Value(),
+		WriteErrors:         r.WriteErrors.Value(),
+		WriteLatency:        histogramSnap{r.WriteLatency.Buckets(), r.WriteLatency.Counts()},
+		ReadOps:             r.ReadOps.Value(),
+		ReadErrors:          r.ReadErrors.Value(),
+		ReadLatency:         histogramSnap{r.ReadLatency.Buckets(), r.ReadLatency.Counts()},
+		ScrubOps:            r.ScrubOps.Value(),
+		ScrubErrors:         r.ScrubErrors.Value(),
+		ScrubLatency:        histogramSnap{r.ScrubLatency.Buckets(), r.ScrubLatency.Counts()},
+		RebuildOps:          r.RebuildOps.Value(),
+		RebuildErrors:       r.RebuildErrors.Value(),
+		RebuildLatency:      histogramSnap{r.RebuildLatency.Buckets(), r.RebuildLatency.Counts()},
+		RecoverOps:          r.RecoverOps.Value(),
+		RecoverErrors:       r.RecoverErrors.Value(),
+		RecoveryLatency:     histogramSnap{r.RecoveryLatency.Buckets(), r.RecoveryLatency.Counts()},
+		ActiveWrites:        r.ActiveWrites.Value(),
+		ActiveReads:         r.ActiveReads.Value(),
+		ActiveConnections:   r.ActiveConnections.Value(),
+		ConnectionsAccepted: r.ConnectionsAccepted.Value(),
+		CommandsProcessed:   r.CommandsProcessed.Value(),
+		UptimeSec:           uptime,
 	}
 }
 
@@ -252,4 +273,53 @@ func (r *Recorder) Uptime() time.Duration {
 		return 0
 	}
 	return time.Since(time.Unix(started, 0))
+}
+
+func (r *Recorder) Prometheus() string {
+	snap := r.Snapshot()
+	lines := []string{
+		"# HELP rtparityd_write_ops_total Total write operations",
+		"# TYPE rtparityd_write_ops_total counter",
+		fmt.Sprintf("rtparityd_write_ops_total %d", snap.WriteOps),
+		"# HELP rtparityd_write_errors_total Total write errors",
+		"# TYPE rtparityd_write_errors_total counter",
+		fmt.Sprintf("rtparityd_write_errors_total %d", snap.WriteErrors),
+		"# HELP rtparityd_read_ops_total Total read operations",
+		"# TYPE rtparityd_read_ops_total counter",
+		fmt.Sprintf("rtparityd_read_ops_total %d", snap.ReadOps),
+		"# HELP rtparityd_read_errors_total Total read errors",
+		"# TYPE rtparityd_read_errors_total counter",
+		fmt.Sprintf("rtparityd_read_errors_total %d", snap.ReadErrors),
+		"# HELP rtparityd_scrub_ops_total Total scrub operations",
+		"# TYPE rtparityd_scrub_ops_total counter",
+		fmt.Sprintf("rtparityd_scrub_ops_total %d", snap.ScrubOps),
+		"# HELP rtparityd_scrub_errors_total Total scrub errors",
+		"# TYPE rtparityd_scrub_errors_total counter",
+		fmt.Sprintf("rtparityd_scrub_errors_total %d", snap.ScrubErrors),
+		"# HELP rtparityd_rebuild_ops_total Total rebuild operations",
+		"# TYPE rtparityd_rebuild_ops_total counter",
+		fmt.Sprintf("rtparityd_rebuild_ops_total %d", snap.RebuildOps),
+		"# HELP rtparityd_rebuild_errors_total Total rebuild errors",
+		"# TYPE rtparityd_rebuild_errors_total counter",
+		fmt.Sprintf("rtparityd_rebuild_errors_total %d", snap.RebuildErrors),
+		"# HELP rtparityd_active_writes Currently active write operations",
+		"# TYPE rtparityd_active_writes gauge",
+		fmt.Sprintf("rtparityd_active_writes %d", snap.ActiveWrites),
+		"# HELP rtparityd_active_reads Currently active read operations",
+		"# TYPE rtparityd_active_reads gauge",
+		fmt.Sprintf("rtparityd_active_reads %d", snap.ActiveReads),
+		"# HELP rtparityd_active_connections Currently active connections",
+		"# TYPE rtparityd_active_connections gauge",
+		fmt.Sprintf("rtparityd_active_connections %d", snap.ActiveConnections),
+		"# HELP rtparityd_connections_accepted_total Total accepted connections",
+		"# TYPE rtparityd_connections_accepted_total counter",
+		fmt.Sprintf("rtparityd_connections_accepted_total %d", snap.ConnectionsAccepted),
+		"# HELP rtparityd_commands_processed_total Total commands processed",
+		"# TYPE rtparityd_commands_processed_total counter",
+		fmt.Sprintf("rtparityd_commands_processed_total %d", snap.CommandsProcessed),
+		"# HELP rtparityd_uptime_seconds Daemon uptime in seconds",
+		"# TYPE rtparityd_uptime_seconds gauge",
+		fmt.Sprintf("rtparityd_uptime_seconds %d", snap.UptimeSec),
+	}
+	return strings.Join(lines, "\n")
 }

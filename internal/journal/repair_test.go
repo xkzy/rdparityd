@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestRunParityRepairSucceeds(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("parity-repair-test-"), 65536)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/parity-repair.bin",
 		Payload:     payload,

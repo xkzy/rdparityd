@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,7 +19,7 @@ func TestGate10_ScrubRepairPathRepairsCorruptedExtent(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("scrub-repair-path-"), 65536)
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/scrub/repair.bin",
 		AllowSynthetic: true,

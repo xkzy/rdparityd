@@ -20,6 +20,7 @@ package journal
 //   - pool can accept new writes afterwards
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +37,7 @@ func setupCorruptedGroupAndStartWrite(t *testing.T, dir string) (metaPath, journ
 	journalPath = filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	resA, err := coord.WriteFile(WriteRequest{
+	resA, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "crash-heal-test",
 		LogicalPath:    "/test/a.bin",
 		AllowSynthetic: true,
@@ -95,7 +96,7 @@ func TestCrashBeforeAnyRepair_ThenWriteB(t *testing.T) {
 
 	// Crash B at StatePrepared — before ensureHealthyCommittedParityInputs runs.
 	coord := NewCoordinator(metaPath, journalPath)
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "crash-heal-test",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,
@@ -217,7 +218,7 @@ func TestCrashAfterEmbeddedRepairBeforeParityWrite(t *testing.T) {
 	// Write B, stopping at StateDataWritten. ensureHealthyCommittedParityInputs
 	// will run and repair A before writing B's extent; then B's extent is written
 	// and journaled, then the crash is injected.
-	resB, err := coord.WriteFile(WriteRequest{
+	resB, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "crash-heal-test",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,
@@ -266,7 +267,7 @@ func TestDoubleRecoveryAfterPreParityHealCrash(t *testing.T) {
 	metaPath, journalPath, _, _ := setupCorruptedGroupAndStartWrite(t, dir)
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "crash-heal-test",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,

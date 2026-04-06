@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,7 +25,7 @@ func TestExclusiveOperationLockBlocksConcurrentWrite(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := coord2.WriteFile(WriteRequest{
+		_, err := coord2.WriteFile(context.Background(), WriteRequest{
 			PoolName:       "lock-test",
 			LogicalPath:    "/test/blocked-write.bin",
 			AllowSynthetic: true,
@@ -60,7 +61,7 @@ func TestExclusiveOperationLockBlocksConcurrentRecovery(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 
 	writer := NewCoordinator(metaPath, journalPath)
-	_, err := writer.WriteFile(WriteRequest{
+	_, err := writer.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "lock-recovery",
 		LogicalPath:    "/test/recover.bin",
 		AllowSynthetic: true,

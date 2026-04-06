@@ -67,9 +67,9 @@ func (c *Coordinator) acquireExclusiveOperationLock() (*operationLock, error) {
 	}
 
 	const (
-		maxRetries   = 50
+		maxRetries   = 100
 		retryDelay   = 100 * time.Millisecond
-		totalTimeout = 5 * time.Second
+		totalTimeout = 10 * time.Second
 	)
 
 	var f *os.File

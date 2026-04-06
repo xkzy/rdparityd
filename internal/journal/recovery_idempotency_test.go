@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestRecoveryIdempotentMultipleAttempts(t *testing.T) {
 
 	// Create initial committed state with a write.
 	coord := NewCoordinator(metaPath, journalPath)
-	result1, err := coord.WriteFile(WriteRequest{
+	result1, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-idempotent",
 		LogicalPath:    "/test/file1.bin",
 		AllowSynthetic: true,
@@ -35,7 +36,7 @@ func TestRecoveryIdempotentMultipleAttempts(t *testing.T) {
 	}
 
 	// Now perform a write that crashes at StateParityWritten (incomplete recovery state).
-	result2, err := coord.WriteFile(WriteRequest{
+	result2, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-idempotent",
 		LogicalPath:    "/test/file2.bin",
 		AllowSynthetic: true,
@@ -139,7 +140,7 @@ func TestRecoveryIdempotentGenerationMonotonicity(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	// Write file1, stop at StateDataWritten.
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-gen",
 		LogicalPath:    "/test/gen1.bin",
 		AllowSynthetic: true,
@@ -192,7 +193,7 @@ func TestRecoveryIdempotentParityRecomputation(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	// Write file that includes parity computation.
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-parity-recovery",
 		LogicalPath:    "/test/parity-file.bin",
 		AllowSynthetic: true,
@@ -256,7 +257,7 @@ func TestRecoveryIdempotentMetadataSnapshots(t *testing.T) {
 			failAfter = StateDataWritten // Last write incomplete
 		}
 
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:       "test-snap",
 			LogicalPath:    path,
 			AllowSynthetic: true,

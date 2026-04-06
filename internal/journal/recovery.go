@@ -467,19 +467,17 @@ func effectiveRecoveryRecord(txRecords []Record) Record {
 // be called to reconcile them.
 func parityChecksumStale(rootDir string, state metadata.SampleState, extents []metadata.Extent) bool {
 	seen := make(map[string]bool)
+	groupIndex := make(map[string]string, len(state.ParityGroups))
+	for _, group := range state.ParityGroups {
+		groupIndex[group.ParityGroupID] = group.ParityChecksum
+	}
 	for _, extent := range extents {
 		if seen[extent.ParityGroupID] {
 			continue
 		}
 		seen[extent.ParityGroupID] = true
 
-		var storedChecksum string
-		for _, group := range state.ParityGroups {
-			if group.ParityGroupID == extent.ParityGroupID {
-				storedChecksum = group.ParityChecksum
-				break
-			}
-		}
+		storedChecksum := groupIndex[extent.ParityGroupID]
 		if storedChecksum == "" {
 			return true // group not yet in metadata
 		}

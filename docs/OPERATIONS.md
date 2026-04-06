@@ -23,24 +23,36 @@ Edit `/etc/rtparityd/rtparityd.conf`:
 pool-name = "demo"
 journal-path = "/var/lib/rtparityd/journal.bin"
 metadata-path = "/var/lib/rtparityd/metadata.bin"
+snapshot-interval-hours = 24  # periodic metadata snapshots (0 to disable)
 
 [server]
 socket-path = "/var/run/rtparityd/rtparityd.sock"
 require-root-user = true
 read-timeout-seconds = 30
+idle-timeout-seconds = 300
+max-timeout-ms = 300000  # 5 minutes max per-request timeout
 
 [limits]
 write-rate-limit-per-second = 10
+write-burst = 20
 read-rate-limit-per-second = 50
+read-burst = 100
 max-goroutines = 64
+slow-query-threshold-ms = 5000  # log warnings for slow queries
 
 [logging]
 level = "info"
 json = true
 
+[alert]
+enabled = false
+url = "http://localhost:9000/webhook"  # alert webhook URL
+
 [scrub]
 enabled = false
 interval-hours = 24
+start-hour = 2
+end-hour = 5
 ```
 
 Reload config without restart:
@@ -64,6 +76,26 @@ echo '{"id":"1","op":"metrics"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtpar
 ### Get Metrics (Prometheus)
 ```bash
 echo '{"id":"1","op":"prometheus"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+```
+
+### Memory Pool Stats
+```bash
+echo '{"id":"1","op":"memory-pool-stats"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+```
+
+### Get Current Config
+```bash
+echo '{"id":"1","op":"config-get"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+```
+
+### Pool Statistics
+```bash
+echo '{"id":"1","op":"pool-stats"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+```
+
+### State Dump
+```bash
+echo '{"id":"1","op":"state-dump"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
 ```
 
 ### Disk Statistics
@@ -170,3 +202,46 @@ end-hour = 5
 - Admin socket: 0660, root only (SO_PEERCRED)
 - Audit logs: 0640, owned by root
 - Never run with `--require-root=false` in production
+
+## Idempotency
+
+Write operations (`write`, `bulk-write`) support idempotency keys to prevent duplicate writes:
+
+```bash
+echo '{"id":"1","op":"write","idempotency_key":"unique-key-123","params":{"path":"/file","size":1024}}' | \
+    socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+```
+
+If the same `idempotency_key` is used within 10 minutes, the cached result is returned without re-executing.
+
+## Graceful Shutdown
+
+When shutdown is requested:
+1. Daemon stops accepting new connections
+2. Waits for in-flight requests to complete
+3. Exits cleanly
+
+Use `drain` mode to stop accepting new writes while allowing reads to complete.
+
+## Error Responses
+
+Error responses include `error_code` and `suggestion` fields:
+
+```json
+{
+  "id": "1",
+  "error": "rate limit exceeded",
+  "error_code": 1004,
+  "suggestion": "retry after a short delay"
+}
+```
+
+Error codes:
+- 1001: Invalid parameters
+- 1002: Not found
+- 1003: Internal error
+- 1004: Rate limited
+- 1005: Timeout
+- 1006: Not implemented
+- 1007: Permission denied
+- 1008: Invalid state

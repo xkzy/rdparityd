@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,7 +16,7 @@ func TestJournalCompactionAfterCommit(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	for i := 1; i <= 5; i++ {
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:       "compact-test",
 			LogicalPath:    "/test/f" + string(rune('0'+i)) + ".bin",
 			AllowSynthetic: true,
@@ -54,7 +55,7 @@ func TestJournalCompactionNotAppliedWhileTransactionIncomplete(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "compact-incomplete",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,
@@ -81,7 +82,7 @@ func TestJournalCompactionThenRecovery(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "compact-recovery",
 		LogicalPath:    "/test/committed.bin",
 		AllowSynthetic: true,
@@ -91,7 +92,7 @@ func TestJournalCompactionThenRecovery(t *testing.T) {
 		t.Fatalf("first write: %v", err)
 	}
 
-	_, err = coord.WriteFile(WriteRequest{
+	_, err = coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "compact-recovery",
 		LogicalPath:    "/test/partial.bin",
 		AllowSynthetic: true,
@@ -136,7 +137,7 @@ func TestJournalCompactionIdemptotent(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "compact-idempotent",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,

@@ -1,0 +1,38 @@
+[Unit]
+Description=rtparityd storage engine
+Documentation=https://github.com/xkzy/rdparityd
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/rtparityd \
+  -socket /var/run/rtparityd/rtparityd.sock \
+  -metadata-path /var/lib/rtparityd/metadata.bin \
+  -journal-path /var/lib/rtparityd/journal.bin \
+  -pool-name demo
+Restart=on-failure
+RestartSec=5
+
+# Runtime directories
+RuntimeDirectory=rtparityd
+RuntimeDirectoryMode=0755
+
+# Storage directories
+RuntimeDirectoryMode=0755
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rtparityd /var/run/rtparityd
+
+# Resource limits
+MemoryMax=1G
+MemoryHigh=512M
+
+[Install]
+WantedBy=multi-user.target

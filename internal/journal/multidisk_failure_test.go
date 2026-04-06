@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestValidateRecoverabilityInvariantsHealthyPool(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("recoverability-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
 		Payload:     payload,
@@ -42,7 +43,7 @@ func TestValidateRecoverabilityInvariantsUnrecoverableDualFailure(t *testing.T) 
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("dual-failure-"), 65536)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
 		Payload:     payload,
@@ -86,7 +87,7 @@ func TestAnalyzeMultiDiskFailuresNoFailures(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("no-failure-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
 		Payload:     payload,
@@ -115,7 +116,7 @@ func TestAnalyzeMultiDiskFailuresSingleDiskFailure(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("single-disk-failure-"), 65536)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/data/test.bin",
 		Payload:     payload,

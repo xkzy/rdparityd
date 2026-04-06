@@ -6,6 +6,21 @@ pool-name = "demo"
 journal-path = "/var/lib/rtparityd/journal.bin"
 metadata-path = "/var/lib/rtparityd/metadata.bin"
 snapshot-interval-hours = 24                     # periodic metadata snapshots (0 to disable)
+data-dir = "/var/lib/rtparityd"                # base directory for data/parity files
+
+# [[pools]]
+# name = "pool1"
+# disks = ["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"]
+# journal-path = "/var/lib/rtparityd/pool1/journal.bin"
+# metadata-path = "/var/lib/rtparityd/pool1/metadata.bin"
+# data-dir = "/var/lib/rtparityd/pool1"
+
+[[pools]]
+name = "testpool"
+disks = ["/dev/sda", "/dev/sdb", "/dev/sdc", "/dev/sdd"]
+journal-path = "/var/lib/rtparityd/testpool/journal.bin"
+metadata-path = "/var/lib/rtparityd/testpool/metadata.bin"
+data-dir = "/var/lib/rtparityd/testpool"
 
 [server]
 socket-path = "/var/run/rtparityd/rtparityd.sock"

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -30,7 +31,7 @@ func TestRebuildAllDataDisksRebuildsFromParity(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("rebuild-all-data-"), 65536)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/rebuild-all/test.bin",
 		Payload:     payload,
@@ -71,7 +72,7 @@ func TestRebuildAllDataDisksHealthyPoolIsNoOp(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	payload := bytes.Repeat([]byte("healthy-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/healthy/test.bin",
 		Payload:     payload,

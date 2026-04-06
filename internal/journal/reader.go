@@ -368,7 +368,7 @@ func reconstructExtent(rootDir string, state metadata.SampleState, target metada
 		return nil, fmt.Errorf("read parity file: %w", err)
 	}
 
-	memberSet := make(map[string]bool)
+	var memberIDs []string
 	for _, group := range state.ParityGroups {
 		if group.ParityGroupID != target.ParityGroupID {
 			continue
@@ -376,28 +376,28 @@ func reconstructExtent(rootDir string, state metadata.SampleState, target metada
 		if group.ParityChecksum != "" && digestBytes(parityData) != group.ParityChecksum {
 			return nil, fmt.Errorf("parity checksum mismatch for group %s", group.ParityGroupID)
 		}
-		for _, memberID := range group.MemberExtentIDs {
-			memberSet[memberID] = true
-		}
+		memberIDs = group.MemberExtentIDs
 		break
 	}
 
-	rebuilt := append([]byte(nil), parityData...)
+	extentByID := make(map[string]metadata.Extent, len(state.Extents))
 	for _, extent := range state.Extents {
-		if extent.ExtentID == target.ExtentID {
+		extentByID[extent.ExtentID] = extent
+	}
+
+	rebuilt := append([]byte(nil), parityData...)
+	for _, memberID := range memberIDs {
+		if memberID == target.ExtentID {
 			continue
 		}
-		if len(memberSet) > 0 {
-			if !memberSet[extent.ExtentID] {
-				continue
-			}
-		} else if extent.ParityGroupID != target.ParityGroupID {
+		extent, ok := extentByID[memberID]
+		if !ok {
 			continue
 		}
 		memberPath := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
 		memberData, err := os.ReadFile(memberPath)
 		if err != nil {
-			return nil, fmt.Errorf("read peer extent for reconstruction: %w", err)
+			return nil, fmt.Errorf("read peer extent %s for reconstruction: %w", extent.ExtentID, err)
 		}
 		if int64(len(memberData)) != extent.Length {
 			return nil, fmt.Errorf("peer extent length mismatch for %s: committed=%d disk=%d", extent.ExtentID, extent.Length, len(memberData))

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -19,7 +20,7 @@ func TestRebuildCrashMidOperationE1(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e1-crash.bin",
 		AllowSynthetic: true,
@@ -64,7 +65,7 @@ func TestRebuildDiskFullE2(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e2-disk-full.bin",
 		AllowSynthetic: true,
@@ -106,7 +107,7 @@ func TestRebuildSourceExtentCorruptedE3(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e3-src-corrupt.bin",
 		AllowSynthetic: true,
@@ -150,7 +151,7 @@ func TestRebuildParityChecksumMismatchE4(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e4-parity.bin",
 		AllowSynthetic: true,
@@ -216,7 +217,7 @@ func TestRebuildChecksumCatchesCorruptionE6(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e6-checksum.bin",
 		AllowSynthetic: true,
@@ -282,7 +283,7 @@ func TestRebuildWrongGenerationE8(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e8-gen.bin",
 		AllowSynthetic: true,
@@ -319,7 +320,7 @@ func TestRebuildStaleExtentMappingE9(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e9-stale.bin",
 		AllowSynthetic: true,
@@ -355,7 +356,7 @@ func TestRebuildMissingFinalVerificationE10(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coordinator := NewCoordinator(metadataPath, journalPath)
 
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/test/e10-verify.bin",
 		AllowSynthetic: true,

@@ -624,6 +624,11 @@ func mwriteFileRecord(buf *bytes.Buffer, f FileRecord) {
 	mwriteInt64(buf, f.CTime.UnixNano())
 	mwriteStr(buf, f.Policy)
 	mwriteStr(buf, string(f.State))
+	mwriteInt64(buf, int64(f.FileType))
+	mwriteInt64(buf, int64(f.Mode))
+	mwriteStr(buf, f.LinkTarget)
+	mwriteInt64(buf, int64(f.DevMajor))
+	mwriteInt64(buf, int64(f.DevMinor))
 }
 
 func mreadFileRecord(r *bytes.Reader) (FileRecord, error) {
@@ -659,6 +664,29 @@ func mreadFileRecord(r *bytes.Reader) (FileRecord, error) {
 		return f, err
 	}
 	f.State = FileState(stateStr)
+	fileType, err := mreadInt64(r)
+	if err != nil {
+		return f, err
+	}
+	f.FileType = FileType(fileType)
+	mode, err := mreadInt64(r)
+	if err != nil {
+		return f, err
+	}
+	f.Mode = uint32(mode)
+	if f.LinkTarget, err = mreadStr(r); err != nil {
+		return f, err
+	}
+	devMajor, err := mreadInt64(r)
+	if err != nil {
+		return f, err
+	}
+	f.DevMajor = uint32(devMajor)
+	devMinor, err := mreadInt64(r)
+	if err != nil {
+		return f, err
+	}
+	f.DevMinor = uint32(devMinor)
 	return f, nil
 }
 

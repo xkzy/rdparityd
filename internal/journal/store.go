@@ -40,6 +40,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -48,7 +49,19 @@ import (
 const (
 	RecordMagic      = "RTPJ"
 	RecordVersion    = 1
-	recordHeaderSize = 72 // 40-byte prefix + 32-byte BLAKE3 hash
+	recordHeaderSize = 72               // 40-byte prefix + 32-byte BLAKE3 hash
+	MaxRecordSize    = 64 * 1024 * 1024 // 64 MiB max record size
+	MaxPayloadSize   = MaxRecordSize - recordHeaderSize
+)
+
+var (
+	ErrInvalidMagic       = errors.New("invalid record magic")
+	ErrChecksumMismatch   = errors.New("checksum mismatch")
+	ErrUnsupportedVersion = errors.New("unsupported record version")
+	ErrTruncatedRecord    = errors.New("truncated record")
+	ErrMalformedPayload   = errors.New("malformed payload")
+	ErrUnknownStateCode   = errors.New("unknown state code")
+	ErrRecordSizeExceeded = errors.New("record size exceeds maximum")
 )
 
 // State code constants for the on-disk binary representation.
@@ -136,11 +149,16 @@ func (s *Store) Append(record Record) (Record, error) {
 		return Record{}, err
 	}
 
+	payload := encodedPayload(sealed)
+	if len(payload) > MaxPayloadSize {
+		return Record{}, fmt.Errorf("journal payload too large: %d bytes exceeds maximum allowed %d", len(payload), MaxPayloadSize)
+	}
+
 	if err := ensureDir(filepath.Dir(s.path), 0o755); err != nil {
 		return Record{}, fmt.Errorf("create journal directory: %w", err)
 	}
 
-	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return Record{}, fmt.Errorf("open journal: %w", err)
 	}
@@ -229,7 +247,7 @@ func (s *Store) CompactIfClean() error {
 	if err := ensureDir(filepath.Dir(s.path), 0o755); err != nil {
 		return fmt.Errorf("compaction: ensure journal dir: %w", err)
 	}
-	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("compaction: open temp journal: %w", err)
 	}
@@ -529,6 +547,9 @@ func readRecord(r io.Reader) (Record, error) {
 	if totalLen < recordHeaderSize {
 		return Record{}, io.ErrUnexpectedEOF
 	}
+	if totalLen > MaxRecordSize {
+		return Record{}, fmt.Errorf("%w: size %d exceeds maximum %d", ErrRecordSizeExceeded, totalLen, MaxRecordSize)
+	}
 
 	blob := make([]byte, totalLen)
 	if _, err := io.ReadFull(r, blob); err != nil {
@@ -547,7 +568,7 @@ func readRecord(r io.Reader) (Record, error) {
 
 	// Verify magic.
 	if string(hdrPrefix[0:4]) != RecordMagic {
-		return Record{}, fmt.Errorf("invalid journal record magic %q", string(hdrPrefix[0:4]))
+		return Record{}, fmt.Errorf("%w: got %q", ErrInvalidMagic, string(hdrPrefix[0:4]))
 	}
 
 	// Verify BLAKE3 hash: BLAKE3(hdrPrefix + payload) must equal storedHash.
@@ -556,7 +577,7 @@ func readRecord(r io.Reader) (Record, error) {
 	copy(hashInput[40:], payload)
 	computedHash := blake3.Sum256(hashInput)
 	if !bytes.Equal(computedHash[:], storedHash) {
-		return Record{}, fmt.Errorf("journal record BLAKE3 hash mismatch")
+		return Record{}, ErrChecksumMismatch
 	}
 
 	version := binary.BigEndian.Uint16(hdrPrefix[4:6])
@@ -567,12 +588,12 @@ func readRecord(r io.Reader) (Record, error) {
 	payloadLen := binary.BigEndian.Uint32(hdrPrefix[32:36])
 
 	if uint32(recordHeaderSize)+payloadLen != totalLen {
-		return Record{}, fmt.Errorf("journal record length mismatch")
+		return Record{}, ErrTruncatedRecord
 	}
 
 	state, ok := codeToState[stateCode]
 	if !ok {
-		return Record{}, fmt.Errorf("unknown state code %02x", stateCode)
+		return Record{}, fmt.Errorf("%w: %02x", ErrUnknownStateCode, stateCode)
 	}
 
 	record, err := decodePayload(payload)

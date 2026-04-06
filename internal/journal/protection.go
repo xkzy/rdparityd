@@ -18,6 +18,14 @@ type ProtectionStatus struct {
 }
 
 func (c *Coordinator) ProtectionStatus() (ProtectionStatus, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return ProtectionStatus{}, err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if err := c.ensureRecoveredLocked(""); err != nil {
 		return ProtectionStatus{}, err
 	}
@@ -80,6 +88,18 @@ func (c *Coordinator) ProtectionState() (metadata.PoolProtectionState, error) {
 }
 
 func (c *Coordinator) ExtentProtectionClass(extentID string) (metadata.ExtentProtectionClass, error) {
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return "", err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return "", err
+	}
+
 	state, err := c.loadState(metadata.PrototypeState(""))
 	if err != nil {
 		return "", fmt.Errorf("load state: %w", err)
@@ -97,29 +117,10 @@ func (c *Coordinator) ExtentProtectionClass(extentID string) (metadata.ExtentPro
 }
 
 func (c *Coordinator) SetPoolProtectionState(targetState metadata.PoolProtectionState) error {
-	lock, err := c.acquireExclusiveOperationLock()
-	if err != nil {
-		return err
+	switch targetState {
+	case metadata.ProtectionIntegrityOnly, metadata.ProtectionMirrored, metadata.ProtectionParity:
+	default:
+		return fmt.Errorf("invalid protection state: %s", targetState)
 	}
-	defer lock.release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureRecoveredLocked(""); err != nil {
-		return err
-	}
-
-	state, err := c.loadState(metadata.PrototypeState(""))
-	if err != nil {
-		return fmt.Errorf("load state: %w", err)
-	}
-
-	state.Pool.ProtectionState = string(targetState)
-
-	_, err = c.commitState(state)
-	if err != nil {
-		return fmt.Errorf("commit state: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("%w: pool protection mutation is not yet enforced by allocation, write, or rebuild paths", ErrUnsupportedAdminOperation)
 }

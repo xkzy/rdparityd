@@ -73,53 +73,134 @@ type DeleteResult struct {
 	FreedBytes     int64  `json:"freed_bytes"`
 }
 
+// commonMutationSetup performs the standard validation and locking sequence
+// for mutation operations. Returns the lock, state, and error.
+func (c *Coordinator) commonMutationSetup() (*operationLock, metadata.SampleState, error) {
+	if c == nil {
+		return nil, metadata.SampleState{}, fmt.Errorf("coordinator is nil")
+	}
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return nil, metadata.SampleState{}, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return nil, metadata.SampleState{}, err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return nil, metadata.SampleState{}, fmt.Errorf("load metadata state: %w", err)
+	}
+	return lock, state, nil
+}
+
+// findFileByPath locates a file in state by its logical path and returns a pointer
+// to it along with its index. Returns nil if not found.
+func findFileByPath(state *metadata.SampleState, logicalPath string) (*metadata.FileRecord, int) {
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			return &state.Files[i], i
+		}
+	}
+	return nil, -1
+}
+
+// findExtentsForFile returns all extents belonging to a given file.
+func findExtentsForFile(state *metadata.SampleState, fileID string) []metadata.Extent {
+	var result []metadata.Extent
+	for _, ext := range state.Extents {
+		if ext.FileID == fileID {
+			result = append(result, ext)
+		}
+	}
+	return result
+}
+
+// gatherAffectedExtentIDs extracts extent IDs from a slice of extents.
+func gatherAffectedExtentIDs(extents []metadata.Extent) []string {
+	ids := make([]string, len(extents))
+	for i, e := range extents {
+		ids[i] = e.ExtentID
+	}
+	return ids
+}
+
+// removeExtentsFromState removes specified extents from state and updates parity groups.
+// Returns the total bytes freed.
+func removeExtentsFromState(state *metadata.SampleState, toRemove []metadata.Extent) int64 {
+	idSet := make(map[string]bool)
+	var freedBytes int64
+	for _, ext := range toRemove {
+		idSet[ext.ExtentID] = true
+		freedBytes += ext.Length
+	}
+
+	// Remove from Extents
+	var remaining []metadata.Extent
+	for _, ext := range state.Extents {
+		if !idSet[ext.ExtentID] {
+			remaining = append(remaining, ext)
+		}
+	}
+	state.Extents = remaining
+
+	// Update parity groups
+	for i := range state.ParityGroups {
+		var newMembers []string
+		for _, memberID := range state.ParityGroups[i].MemberExtentIDs {
+			if !idSet[memberID] {
+				newMembers = append(newMembers, memberID)
+			}
+		}
+		state.ParityGroups[i].MemberExtentIDs = newMembers
+	}
+
+	// Update disk free bytes
+	for i := range state.Disks {
+		for _, ext := range toRemove {
+			if ext.DataDiskID == state.Disks[i].DiskID {
+				state.Disks[i].FreeBytes += ext.Length
+			}
+		}
+	}
+
+	return freedBytes
+}
+
 // RenameFile changes the logical path of a file without touching any extent
 // data or parity data.
 //
 // Durability: the updated metadata snapshot is saved atomically via
 // replaceSyncFile before the function returns.
 func (c *Coordinator) RenameFile(oldPath, newPath string) (RenameResult, error) {
-	if c == nil {
-		return RenameResult{}, fmt.Errorf("coordinator is nil")
+	if oldPath == "" || newPath == "" {
+		return RenameResult{}, fmt.Errorf("old and new path are required")
 	}
-	lock, err := c.acquireExclusiveOperationLock()
+
+	lock, state, err := c.commonMutationSetup()
 	if err != nil {
 		return RenameResult{}, err
 	}
 	defer lock.release()
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
-	if oldPath == "" {
-		return RenameResult{}, fmt.Errorf("old path is required")
-	}
-	if newPath == "" {
-		return RenameResult{}, fmt.Errorf("new path is required")
-	}
-	if err := c.ensureRecoveredLocked(""); err != nil {
-		return RenameResult{}, err
-	}
-
-	state, err := c.loadState(metadata.SampleState{})
-	if err != nil {
-		return RenameResult{}, fmt.Errorf("load metadata state: %w", err)
-	}
-
-	fileIdx := -1
-	for i, file := range state.Files {
-		if file.Path == oldPath {
-			fileIdx = i
-			continue
-		}
-		if file.Path == newPath {
-			return RenameResult{}, fmt.Errorf("rename %q -> %q: destination already exists", oldPath, newPath)
-		}
-	}
-	if fileIdx == -1 {
+	file, fileIdx := findFileByPath(&state, oldPath)
+	if file == nil {
 		return RenameResult{}, fmt.Errorf("rename %q: file not found", oldPath)
 	}
+
+	// Check no-op first (same path)
 	if oldPath == newPath {
 		return RenameResult{OldPath: oldPath, NewPath: newPath}, nil
+	}
+
+	// Check destination doesn't exist
+	for _, f := range state.Files {
+		if f.Path == newPath {
+			return RenameResult{}, fmt.Errorf("rename %q -> %q: destination already exists", oldPath, newPath)
+		}
 	}
 
 	state.Files[fileIdx].Path = newPath

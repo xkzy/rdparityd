@@ -47,7 +47,7 @@ func crashAndRecover(
 	metadataPath := filepath.Join(dir, "metadata.json")
 	journalPath := filepath.Join(dir, "journal.log")
 
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: logicalPath,
 		Payload:     payload,
@@ -213,7 +213,7 @@ func TestA4_CrashMidDataWriteExtentLimit1(t *testing.T) {
 	payload := makePayload(payloadSize, 17)
 
 	// Inject crash after writing only 1 extent file, before StateDataWritten.
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a4.bin",
 		Payload:          payload,
@@ -288,7 +288,7 @@ func TestA7_CrashMidParityWriteParityLimit1(t *testing.T) {
 	payload := makePayload(payloadSize, 23)
 
 	// Inject crash after writing only 1 parity file, before StateParityWritten.
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:         "demo",
 		LogicalPath:      "/shares/test/a7.bin",
 		Payload:          payload,
@@ -406,7 +406,7 @@ func TestA12_StateTransitionMetadataWrittenToCommitted(t *testing.T) {
 	const payloadSize = (1 << 20) + 400
 	payload := makePayload(payloadSize, 41)
 
-	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	writeResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/test/a12.bin",
 		Payload:     payload,
@@ -571,7 +571,7 @@ func TestAllCategoryACrashPoints(t *testing.T) {
 			journalPath := filepath.Join(dir, "journal.log")
 
 			payload := makePayload(tc.payloadLen, 53)
-			_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+			_, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 				PoolName:    "demo",
 				LogicalPath: "/shares/test/" + tc.name + ".bin",
 				Payload:     payload,
@@ -628,7 +628,7 @@ func TestA_RecoveryIdempotentAfterCrash(t *testing.T) {
 	payload := makePayload((1<<20)+100, 59)
 
 	// Crash at data-written.
-	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/test/idempotent.bin",
 		Payload:     payload,
@@ -684,7 +684,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 
 	// Baseline: committed write to prime the system.
 	basePayload := makePayload((1 << 20), 61)
-	baseResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	baseResult, err := NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/base.bin",
 		Payload:     basePayload,
@@ -695,7 +695,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 
 	// First crash: prepared only (abort).
 	payloadA := makePayload((1<<20)+100, 67)
-	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/a.bin",
 		Payload:     payloadA,
@@ -707,7 +707,7 @@ func TestA_MultipleCrashedWritesRecoveredTogether(t *testing.T) {
 
 	// Second crash: parity-written (recover).
 	payloadB := makePayload((1<<20)+200, 71)
-	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(WriteRequest{
+	_, err = NewCoordinator(metadataPath, journalPath).WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/shares/multi/b.bin",
 		Payload:     payloadB,

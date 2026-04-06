@@ -1,0 +1,238 @@
+package metrics
+
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+type Counter struct {
+	value uint64
+}
+
+func (c *Counter) Inc() {
+	atomic.AddUint64(&c.value, 1)
+}
+
+func (c *Counter) Add(n uint64) {
+	atomic.AddUint64(&c.value, n)
+}
+
+func (c *Counter) Value() uint64 {
+	return atomic.LoadUint64(&c.value)
+}
+
+func (c *Counter) Reset() {
+	atomic.StoreUint64(&c.value, 0)
+}
+
+type Gauge struct {
+	value int64
+}
+
+func (g *Gauge) Set(v int64) {
+	atomic.StoreInt64(&g.value, v)
+}
+
+func (g *Gauge) Inc() {
+	atomic.AddInt64(&g.value, 1)
+}
+
+func (g *Gauge) Dec() {
+	atomic.AddInt64(&g.value, -1)
+}
+
+func (g *Gauge) Value() int64 {
+	return atomic.LoadInt64(&g.value)
+}
+
+type Histogram struct {
+	mu      sync.Mutex
+	counts  []uint64
+	buckets []time.Duration
+}
+
+func NewHistogram(buckets []time.Duration) *Histogram {
+	if len(buckets) == 0 {
+		buckets = []time.Duration{
+			1 * time.Millisecond,
+			5 * time.Millisecond,
+			10 * time.Millisecond,
+			50 * time.Millisecond,
+			100 * time.Millisecond,
+			500 * time.Millisecond,
+			time.Second,
+			5 * time.Second,
+			10 * time.Second,
+		}
+	}
+	return &Histogram{
+		buckets: buckets,
+		counts:  make([]uint64, len(buckets)+1),
+	}
+}
+
+func (h *Histogram) Record(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.buckets {
+		if d < h.buckets[i] {
+			h.counts[i]++
+			return
+		}
+	}
+	h.counts[len(h.buckets)]++
+}
+
+func (h *Histogram) Counts() []uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cp := make([]uint64, len(h.counts))
+	copy(cp, h.counts)
+	return cp
+}
+
+func (h *Histogram) Buckets() []time.Duration {
+	return h.buckets
+}
+
+func (h *Histogram) Reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := range h.counts {
+		h.counts[i] = 0
+	}
+}
+
+type Recorder struct {
+	WriteOps        *Counter
+	WriteErrors     *Counter
+	WriteLatency    *Histogram
+	ReadOps         *Counter
+	ReadErrors      *Counter
+	ReadLatency     *Histogram
+	ScrubOps        *Counter
+	ScrubErrors     *Counter
+	ScrubLatency    *Histogram
+	RebuildOps      *Counter
+	RebuildErrors   *Counter
+	RebuildLatency  *Histogram
+	RecoverOps      *Counter
+	RecoverErrors   *Counter
+	RecoveryLatency *Histogram
+
+	ActiveWrites *Gauge
+	ActiveReads  *Gauge
+
+	startTime time.Time
+	startedAt int64
+}
+
+var global = &Recorder{
+	WriteOps:        &Counter{},
+	WriteErrors:     &Counter{},
+	WriteLatency:    NewHistogram(nil),
+	ReadOps:         &Counter{},
+	ReadErrors:      &Counter{},
+	ReadLatency:     NewHistogram(nil),
+	ScrubOps:        &Counter{},
+	ScrubErrors:     &Counter{},
+	ScrubLatency:    NewHistogram(nil),
+	RebuildOps:      &Counter{},
+	RebuildErrors:   &Counter{},
+	RebuildLatency:  NewHistogram(nil),
+	RecoverOps:      &Counter{},
+	RecoverErrors:   &Counter{},
+	RecoveryLatency: NewHistogram(nil),
+	ActiveWrites:    &Gauge{},
+	ActiveReads:     &Gauge{},
+	startTime:       time.Now(),
+}
+
+func Global() *Recorder {
+	atomic.StoreInt64(&global.startedAt, global.startTime.Unix())
+	return global
+}
+
+func (r *Recorder) Reset() {
+	r.WriteOps.Reset()
+	r.WriteErrors.Reset()
+	r.WriteLatency.Reset()
+	r.ReadOps.Reset()
+	r.ReadErrors.Reset()
+	r.ReadLatency.Reset()
+	r.ScrubOps.Reset()
+	r.ScrubErrors.Reset()
+	r.ScrubLatency.Reset()
+	r.RebuildOps.Reset()
+	r.RebuildErrors.Reset()
+	r.RebuildLatency.Reset()
+	r.RecoverOps.Reset()
+	r.RecoverErrors.Reset()
+	r.RecoveryLatency.Reset()
+	r.ActiveWrites.Set(0)
+	r.ActiveReads.Set(0)
+}
+
+type Snapshot struct {
+	WriteOps        uint64        `json:"write_ops"`
+	WriteErrors     uint64        `json:"write_errors"`
+	WriteLatency    histogramSnap `json:"write_latency_ms"`
+	ReadOps         uint64        `json:"read_ops"`
+	ReadErrors      uint64        `json:"read_errors"`
+	ReadLatency     histogramSnap `json:"read_latency_ms"`
+	ScrubOps        uint64        `json:"scrub_ops"`
+	ScrubErrors     uint64        `json:"scrub_errors"`
+	ScrubLatency    histogramSnap `json:"scrub_latency_ms"`
+	RebuildOps      uint64        `json:"rebuild_ops"`
+	RebuildErrors   uint64        `json:"rebuild_errors"`
+	RebuildLatency  histogramSnap `json:"rebuild_latency_ms"`
+	RecoverOps      uint64        `json:"recover_ops"`
+	RecoverErrors   uint64        `json:"recover_errors"`
+	RecoveryLatency histogramSnap `json:"recovery_latency_ms"`
+	ActiveWrites    int64         `json:"active_writes"`
+	ActiveReads     int64         `json:"active_reads"`
+	UptimeSec       int64         `json:"uptime_seconds"`
+}
+
+type histogramSnap struct {
+	Buckets []time.Duration `json:"buckets"`
+	Counts  []uint64        `json:"counts"`
+}
+
+func (r *Recorder) Snapshot() Snapshot {
+	started := atomic.LoadInt64(&global.startedAt)
+	var uptime int64
+	if started > 0 {
+		uptime = time.Now().Unix() - started
+	}
+
+	return Snapshot{
+		WriteOps:        r.WriteOps.Value(),
+		WriteErrors:     r.WriteErrors.Value(),
+		WriteLatency:    histogramSnap{r.WriteLatency.Buckets(), r.WriteLatency.Counts()},
+		ReadOps:         r.ReadOps.Value(),
+		ReadErrors:      r.ReadErrors.Value(),
+		ReadLatency:     histogramSnap{r.ReadLatency.Buckets(), r.ReadLatency.Counts()},
+		ScrubOps:        r.ScrubOps.Value(),
+		ScrubErrors:     r.ScrubErrors.Value(),
+		ScrubLatency:    histogramSnap{r.ScrubLatency.Buckets(), r.ScrubLatency.Counts()},
+		RebuildOps:      r.RebuildOps.Value(),
+		RebuildErrors:   r.RebuildErrors.Value(),
+		RebuildLatency:  histogramSnap{r.RebuildLatency.Buckets(), r.RebuildLatency.Counts()},
+		RecoverOps:      r.RecoverOps.Value(),
+		RecoverErrors:   r.RecoverErrors.Value(),
+		RecoveryLatency: histogramSnap{r.RecoveryLatency.Buckets(), r.RecoveryLatency.Counts()},
+		ActiveWrites:    r.ActiveWrites.Value(),
+		ActiveReads:     r.ActiveReads.Value(),
+		UptimeSec:       uptime,
+	}
+}
+
+func (r *Recorder) Uptime() time.Duration {
+	started := atomic.LoadInt64(&r.startedAt)
+	if started == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(started, 0))
+}

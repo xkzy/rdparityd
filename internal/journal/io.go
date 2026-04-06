@@ -20,13 +20,13 @@ package journal
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/xkzy/rdparityd/internal/logger"
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
@@ -83,7 +83,7 @@ func (p *DiskWorkerPool) worker() {
 	defer p.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("DiskWorkerPool worker recovered from panic: %v", r)
+			logger.Error("DiskWorkerPool worker recovered from panic", "error", r)
 		}
 	}()
 	for task := range p.workCh {
@@ -528,7 +528,7 @@ func (s *IOScheduler) worker(id int) {
 	defer s.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("IOScheduler worker %d recovered from panic: %v", id, r)
+			logger.Error("IOScheduler worker recovered from panic", "worker_id", id, "error", r)
 		}
 	}()
 

@@ -17,7 +17,10 @@
 
 package metadata
 
-import "time"
+import (
+	"syscall"
+	"time"
+)
 
 // ChecksumAlgorithm is the hash function used for all extent and parity
 // checksums. It is defined here (in the metadata package) so that both the
@@ -89,14 +92,71 @@ const (
 	FileStateAllocated FileState = "allocated"
 )
 
+type FileType int
+
+const (
+	FileTypeRegular FileType = iota
+	FileTypeSymlink
+	FileTypeDirectory
+	FileTypeFIFO
+	FileTypeSocket
+	FileTypeBlockDevice
+	FileTypeCharDevice
+)
+
+func (ft FileType) String() string {
+	switch ft {
+	case FileTypeRegular:
+		return "regular"
+	case FileTypeSymlink:
+		return "symlink"
+	case FileTypeDirectory:
+		return "directory"
+	case FileTypeFIFO:
+		return "fifo"
+	case FileTypeSocket:
+		return "socket"
+	case FileTypeBlockDevice:
+		return "block"
+	case FileTypeCharDevice:
+		return "char"
+	default:
+		return "unknown"
+	}
+}
+
+func FileTypeFromMode(mode uint32) FileType {
+	switch mode & syscall.S_IFMT {
+	case syscall.S_IFLNK:
+		return FileTypeSymlink
+	case syscall.S_IFDIR:
+		return FileTypeDirectory
+	case syscall.S_IFIFO:
+		return FileTypeFIFO
+	case syscall.S_IFSOCK:
+		return FileTypeSocket
+	case syscall.S_IFBLK:
+		return FileTypeBlockDevice
+	case syscall.S_IFCHR:
+		return FileTypeCharDevice
+	default:
+		return FileTypeRegular
+	}
+}
+
 type FileRecord struct {
-	FileID    string    `json:"file_id"`
-	Path      string    `json:"path"`
-	SizeBytes int64     `json:"size_bytes"`
-	MTime     time.Time `json:"mtime"`
-	CTime     time.Time `json:"ctime"`
-	Policy    string    `json:"policy"`
-	State     FileState `json:"state"`
+	FileID     string    `json:"file_id"`
+	Path       string    `json:"path"`
+	SizeBytes  int64     `json:"size_bytes"`
+	MTime      time.Time `json:"mtime"`
+	CTime      time.Time `json:"ctime"`
+	Policy     string    `json:"policy"`
+	State      FileState `json:"state"`
+	FileType   FileType  `json:"file_type"`
+	Mode       uint32    `json:"mode"`
+	LinkTarget string    `json:"link_target,omitempty"`
+	DevMajor   uint32    `json:"dev_major,omitempty"`
+	DevMinor   uint32    `json:"dev_minor,omitempty"`
 }
 
 type Locator struct {

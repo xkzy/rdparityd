@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -27,7 +28,7 @@ func TestRecoveryRecomputesStaleParityChecksumWhenGroupMembershipChanges(t *test
 	coord := NewCoordinator(metaPath, journalPath)
 
 	// T1: one extent committed, producing an initial parity checksum for pg-000001.
-	res1, err := coord.WriteFile(WriteRequest{
+	res1, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "parity-stale",
 		LogicalPath:    "/test/file1.bin",
 		AllowSynthetic: true,
@@ -54,7 +55,7 @@ func TestRecoveryRecomputesStaleParityChecksumWhenGroupMembershipChanges(t *test
 	}
 
 	// T2: second extent lands in the same parity group and crashes after parity write.
-	res2, err := coord.WriteFile(WriteRequest{
+	res2, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "parity-stale",
 		LogicalPath:    "/test/file2.bin",
 		AllowSynthetic: true,
@@ -123,7 +124,7 @@ func TestRecoveryReconcilesCommittedTransactionWithStaleParityChecksumFromOldMet
 	coord := NewCoordinator(metaPath, journalPath)
 
 	// T1 committed; keep a copy of the old metadata snapshot.
-	res1, err := coord.WriteFile(WriteRequest{
+	res1, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "parity-reconcile",
 		LogicalPath:    "/test/file1.bin",
 		AllowSynthetic: true,
@@ -147,7 +148,7 @@ func TestRecoveryReconcilesCommittedTransactionWithStaleParityChecksumFromOldMet
 	// T2 stops at StateDataWritten — keeps a journal record for reconciliation.
 	// This simulates the scenario where T2's write was in-flight when a crash
 	// left metadata pointing at T1's checksum but T2's data and journal record exist.
-	res2, err := coord.WriteFile(WriteRequest{
+	res2, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "parity-reconcile",
 		LogicalPath:    "/test/file2.bin",
 		AllowSynthetic: true,
@@ -208,7 +209,7 @@ func TestWriteParityFilesRejectsCorruptedMemberInput(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "parity-input-check",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,
@@ -244,7 +245,7 @@ func TestRecoveryRepairsCommittedPeerBeforeStaleParityRecompute(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	res1, err := coord.WriteFile(WriteRequest{
+	res1, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "stale-parity-heal",
 		LogicalPath:    "/test/file1.bin",
 		AllowSynthetic: true,
@@ -254,7 +255,7 @@ func TestRecoveryRepairsCommittedPeerBeforeStaleParityRecompute(t *testing.T) {
 		t.Fatalf("WriteFile T1: %v", err)
 	}
 	payload2 := makePayload(4096, 0x42)
-	res2, err := coord.WriteFile(WriteRequest{
+	res2, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "stale-parity-heal",
 		LogicalPath:    "/test/file2.bin",
 		AllowSynthetic: true,

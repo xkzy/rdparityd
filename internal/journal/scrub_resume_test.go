@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,7 @@ func TestScrubInterruptionPersistsProgressAndResumes(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "scrub-resume",
 		LogicalPath:    "/test/large.bin",
 		AllowSynthetic: true,
@@ -81,7 +82,7 @@ func TestScrubProgressModeMismatchStartsFresh(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "scrub-mode",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,

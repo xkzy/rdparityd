@@ -18,6 +18,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,7 +38,7 @@ func writeAndCommit(t *testing.T, dir string, logicalPath string, payloadSize in
 	journalPath = filepath.Join(dir, "journal.log")
 	payload = makePayload(payloadSize, seed)
 	coord := NewCoordinator(metaPath, journalPath)
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-pool-g",
 		LogicalPath:    logicalPath,
 		AllowSynthetic: true,
@@ -52,7 +53,7 @@ func writeAndCommit(t *testing.T, dir string, logicalPath string, payloadSize in
 	// Keep a pending journal record so tests that corrupt metadata can still
 	// recover via the journal. Without this, compaction zeros the journal and
 	// I12 correctly refuses recovery (corrupt metadata + no journal = data loss).
-	_, _ = coord.WriteFile(WriteRequest{
+	_, _ = coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-pool-g",
 		LogicalPath:    logicalPath + ".pending",
 		AllowSynthetic: true,
@@ -140,7 +141,7 @@ func TestG3_GenerationRollback(t *testing.T) {
 
 	// Do a second write to advance the generation.
 	coord2 := NewCoordinator(metaPath, journalPath)
-	_, err = coord2.WriteFile(WriteRequest{
+	_, err = coord2.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-pool-g",
 		LogicalPath:    "/test/g3b.bin",
 		AllowSynthetic: true,
@@ -222,7 +223,7 @@ func TestG5_ReferencesUncommittedExtent(t *testing.T) {
 
 	// Start a write that will crash before commit (extentWriteLimit=1).
 	coord2 := NewCoordinator(metaPath, journalPath)
-	_, err := coord2.WriteFile(WriteRequest{
+	_, err := coord2.WriteFile(context.Background(), WriteRequest{
 		PoolName:         "test-pool-g",
 		LogicalPath:      "/test/g5-uncommitted.bin",
 		AllowSynthetic:   true,
@@ -331,7 +332,7 @@ func TestG8_StaleCheckpointApplied(t *testing.T) {
 	// Write a second file stopping at StateDataWritten — keeps a journal record
 	// for recovery to use when metadata is rolled back to the stale snapshot.
 	coord2 := NewCoordinator(metaPath, journalPath)
-	_, err = coord2.WriteFile(WriteRequest{
+	_, err = coord2.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-pool-g",
 		LogicalPath:    "/test/g8b.bin",
 		AllowSynthetic: true,

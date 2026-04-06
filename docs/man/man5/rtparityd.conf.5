@@ -1,0 +1,114 @@
+.TH RTPARITYD.CONF 5 "April 2026" "rtparityd 0.1.0"
+.SH NAME
+rtparityd.conf \- rtparityd configuration file
+
+.SH DESCRIPTION
+\fBrtparityd.conf\fR is the configuration file for the rtparityd storage engine.
+It is read from \fB/etc/rtparityd/config.yaml\fR by default.
+
+The configuration uses YAML format with the following sections.
+
+.SH CONFIGURATION SECTIONS
+
+.SS pool
+Pool-level settings.
+.TP
+.B name
+Pool name (string, default: demo)
+.TP
+.B metadata_path
+Path to binary metadata snapshot (default: /var/lib/rtparityd/metadata.bin)
+.TP
+.B journal_path
+Path to binary journal (default: /var/lib/rtparityd/journal.bin)
+
+.SS network
+Network/socket settings.
+.TP
+.B socket_path
+Unix socket path (default: /var/run/rtparityd/rtparityd.sock)
+.TP
+.B socket_permissions
+Socket permissions as string (default: "0660")
+
+.SS runtime
+Runtime directory settings.
+.TP
+.B data_directory
+Data directory for metadata and journal (default: /var/lib/rtparityd)
+.TP
+.B run_directory
+Runtime directory for socket and pid (default: /var/run/rtparityd)
+.TP
+.B log_level
+Log level: debug, info, warn, error (default: info)
+
+.SS storage
+Storage engine settings.
+.TP
+.B default_extent_size
+Default extent size in bytes (default: 1048576 = 1 MiB)
+.TP
+.B default_parity_groups
+Default number of data disks per parity group (default: 8)
+.TP
+.B compression_default
+Default compression algorithm: zstd, lz4, snappy, gzip, xz, or empty for none (default: "")
+
+.SS maintenance
+Background maintenance settings.
+.TP
+.B scrub_enabled
+Enable automatic scrub (boolean, default: false)
+.TP
+.B scrub_interval_hours
+Scrub interval in hours (default: 168 = weekly)
+.TP
+.B scrub_repair
+Auto-repair during scrub (boolean, default: true)
+.TP
+.B rebuild_on_startup
+Rebuild missing extents on startup (boolean, default: false)
+
+.SH EXAMPLE
+.nf
+pool:
+  name: demo
+  metadata_path: /var/lib/rtparityd/metadata.bin
+  journal_path: /var/lib/rtparityd/journal.bin
+
+network:
+  socket_path: /var/run/rtparityd/rtparityd.sock
+  socket_permissions: "0660"
+
+runtime:
+  data_directory: /var/lib/rtparityd
+  run_directory: /var/run/rtparityd
+  log_level: info
+
+storage:
+  default_extent_size: 1048576
+  default_parity_groups: 8
+  compression_default: ""
+
+maintenance:
+  scrub_enabled: false
+  scrub_interval_hours: 168
+  scrub_repair: true
+  rebuild_on_startup: false
+.fi
+
+.SH FILES
+.TP
+.B /etc/rtparityd/config.yaml
+Default configuration file location.
+
+.SH SEE ALSO
+.BR rtparityd (8),
+.BR rtparityd.service (8)
+
+.SH AUTHOR
+Written by the rtparityd project.
+
+.SH LICENSE
+GNU General Public License version 2

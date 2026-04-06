@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -133,7 +134,7 @@ func TestWriteCoordinator_WriteExtents(t *testing.T) {
 		},
 	}
 
-	err := coord.WriteExtents(extents, make([]byte, 4096))
+	err := coord.WriteExtents(context.Background(), extents, make([]byte, 4096))
 	if err != nil {
 		t.Logf("WriteExtents returned error (may need real disk): %v", err)
 	}
@@ -212,7 +213,8 @@ func TestReadCoordinator_ReadExtents(t *testing.T) {
 
 	coord := NewReadCoordinator(scheduler, dir, state)
 
-	results, err := coord.ReadExtents(state.Extents)
+	ctx := context.Background()
+	results, err := coord.ReadExtents(ctx, state.Extents)
 	if err != nil {
 		t.Logf("ReadExtents returned error (expected - not implemented): %v", err)
 	}

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,7 +56,7 @@ func TestCategoryH_ConcurrentWritesToDifferentFiles(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := coord.WriteFile(WriteRequest{
+			_, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:    "demo",
 				LogicalPath: paths[i],
 				Payload:     payloads[i],
@@ -121,7 +122,7 @@ func TestCategoryH_ConcurrentReadsWhileWriting(t *testing.T) {
 	)
 
 	originalPayload := bytes.Repeat([]byte("read-consistent-"), 150000)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/concurrent/read.bin",
 		Payload:     originalPayload,
@@ -228,7 +229,7 @@ func TestCategoryH_ConcurrentWriteToSameFile(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payloadA,
@@ -243,7 +244,7 @@ func TestCategoryH_ConcurrentWriteToSameFile(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payloadB,
@@ -258,7 +259,7 @@ func TestCategoryH_ConcurrentWriteToSameFile(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: path,
 			Payload:     payloadC,
@@ -342,14 +343,14 @@ func TestCategoryH_WriteAndRepairRaceCondition(t *testing.T) {
 	payloadB := bytes.Repeat([]byte("B"), (1<<20)+333)
 	payloadC := bytes.Repeat([]byte("C"), 16384)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/race/a.bin",
 		Payload:     payloadA,
 	}); err != nil {
 		t.Fatalf("initial write A failed: %v", err)
 	}
-	writeB, err := coord.WriteFile(WriteRequest{
+	writeB, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/race/b.bin",
 		Payload:     payloadB,
@@ -379,7 +380,7 @@ func TestCategoryH_WriteAndRepairRaceCondition(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: "/race/c.bin",
 			Payload:     payloadC,
@@ -463,7 +464,7 @@ func TestCategoryH_ConcurrentScrubAndWrite(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		payload := bytes.Repeat([]byte{byte('s' + i)}, (1<<20)+(i*89))
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: fmt.Sprintf("/scrub-write/%d.bin", i),
 			Payload:     payload,
@@ -494,7 +495,7 @@ func TestCategoryH_ConcurrentScrubAndWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		payload := bytes.Repeat([]byte("concurrent-write-"), 180000)
-		if _, err := coord.WriteFile(WriteRequest{
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:    "demo",
 			LogicalPath: "/scrub-write/concurrent.bin",
 			Payload:     payload,
@@ -545,7 +546,7 @@ func TestCategoryH_MultipleRepairsOfDifferentExtents(t *testing.T) {
 	allPaths := []string{"/repair/a.bin", "/repair/b.bin", "/repair/c.bin", "/repair/d.bin", "/repair/e.bin"}
 	targetPaths := make(map[string]string)
 	for _, p := range allPaths {
-		result, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: p, AllowSynthetic: true, SizeBytes: 4096})
+		result, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: p, AllowSynthetic: true, SizeBytes: 4096})
 		if err != nil {
 			t.Fatalf("WriteFile %s failed: %v", p, err)
 		}
@@ -629,7 +630,7 @@ func TestCategoryH_RaceFredomMetadataUpdates(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			coord := NewCoordinator(metaPath, journalPath)
-			_, err := coord.WriteFile(WriteRequest{
+			_, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:       "demo",
 				LogicalPath:    fmt.Sprintf("/race/file-%d.bin", i),
 				AllowSynthetic: true,
@@ -686,7 +687,7 @@ func TestCategoryH_ConcurrentJournalReplay(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/replay/base.bin",
 		AllowSynthetic: true,
@@ -695,7 +696,7 @@ func TestCategoryH_ConcurrentJournalReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("base write failed: %v", err)
 	}
-	_, err = coord.WriteFile(WriteRequest{
+	_, err = coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/replay/recover.bin",
 		AllowSynthetic: true,
@@ -714,7 +715,7 @@ func TestCategoryH_ConcurrentJournalReplay(t *testing.T) {
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{
+		_, err := NewCoordinator(metaPath, journalPath).WriteFile(context.Background(), WriteRequest{
 			PoolName:       "demo",
 			LogicalPath:    "/replay/new-write.bin",
 			AllowSynthetic: true,
@@ -776,7 +777,7 @@ func TestCategoryH_HighConcurrencyStressTest(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	_, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/stress/base.bin", AllowSynthetic: true, SizeBytes: 4096})
+	_, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/stress/base.bin", AllowSynthetic: true, SizeBytes: 4096})
 	if err != nil {
 		t.Fatalf("base write failed: %v", err)
 	}
@@ -787,7 +788,7 @@ func TestCategoryH_HighConcurrencyStressTest(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{
+			_, err := NewCoordinator(metaPath, journalPath).WriteFile(context.Background(), WriteRequest{
 				PoolName:       "demo",
 				LogicalPath:    fmt.Sprintf("/stress/write-%02d.bin", i),
 				AllowSynthetic: true,
@@ -866,11 +867,11 @@ func TestCategoryH_DeadlockFredomInLockingHierarchy(t *testing.T) {
 	journalPath := filepath.Join(root, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	base, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/base.bin", AllowSynthetic: true, SizeBytes: 4096})
+	base, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/base.bin", AllowSynthetic: true, SizeBytes: 4096})
 	if err != nil {
 		t.Fatalf("base write failed: %v", err)
 	}
-	_, err = coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/pending.bin", AllowSynthetic: true, SizeBytes: 4096, FailAfter: StateParityWritten})
+	_, err = coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/pending.bin", AllowSynthetic: true, SizeBytes: 4096, FailAfter: StateParityWritten})
 	if err != nil {
 		t.Fatalf("pending write failed: %v", err)
 	}
@@ -895,7 +896,7 @@ func TestCategoryH_DeadlockFredomInLockingHierarchy(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/new.bin", AllowSynthetic: true, SizeBytes: 4096})
+			_, err := NewCoordinator(metaPath, journalPath).WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/deadlock/new.bin", AllowSynthetic: true, SizeBytes: 4096})
 			return err
 		},
 		func() error { _, err := NewCoordinator(metaPath, journalPath).Scrub(true); return err },

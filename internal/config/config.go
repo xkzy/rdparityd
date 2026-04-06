@@ -24,6 +24,7 @@ type Config struct {
 	Alert    AlertConfig    `toml:"alert"`
 	Scrub    ScrubConfig    `toml:"scrub"`
 	DiskPool DiskPoolConfig `toml:"disk-pool"`
+	Pools    []PoolConfig   `toml:"pools"`
 }
 
 type AlertConfig struct {
@@ -36,6 +37,15 @@ type GlobalConfig struct {
 	JournalPath         string `toml:"journal-path"`
 	MetadataPath        string `toml:"metadata-path"`
 	SnapshotIntervalHrs int    `toml:"snapshot-interval-hours"`
+	DataDir             string `toml:"data-dir"`
+}
+
+type PoolConfig struct {
+	Name         string   `toml:"name"`
+	Disks        []string `toml:"disks"`
+	JournalPath  string   `toml:"journal-path"`
+	MetadataPath string   `toml:"metadata-path"`
+	DataDir      string   `toml:"data-dir"`
 }
 
 type ServerConfig struct {
@@ -210,4 +220,23 @@ func (c *ServerConfig) ReadTimeoutDuration() time.Duration {
 
 func (c *ServerConfig) IdleTimeoutDuration() time.Duration {
 	return time.Duration(c.IdleTimeout) * time.Second
+}
+
+func (c *Config) GetPool(name string) *PoolConfig {
+	if c == nil {
+		return nil
+	}
+	for i := range c.Pools {
+		if c.Pools[i].Name == name {
+			return &c.Pools[i]
+		}
+	}
+	return nil
+}
+
+func (c *Config) GetPoolPaths(name string) (journalPath, metadataPath, dataDir string) {
+	if pool := c.GetPool(name); pool != nil {
+		return pool.JournalPath, pool.MetadataPath, pool.DataDir
+	}
+	return c.Global.JournalPath, c.Global.MetadataPath, c.Global.DataDir
 }

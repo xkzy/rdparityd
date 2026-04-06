@@ -1,7 +1,9 @@
 package journal
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -25,6 +27,16 @@ func newSemaphore(n int) semaphore {
 }
 
 func (s semaphore) Acquire() { <-s }
+
+func (s semaphore) AcquireContext(ctx context.Context) bool {
+	select {
+	case <-s:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (s semaphore) Release() { s <- struct{}{} }
 
 type DiskWorkerPool struct {
@@ -52,6 +64,11 @@ func NewDiskWorkerPool(diskID string, maxWorkers int) *DiskWorkerPool {
 
 func (p *DiskWorkerPool) worker() {
 	defer p.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("DiskWorkerPool worker recovered from panic: %v", r)
+		}
+	}()
 	for task := range p.workCh {
 		atomic.AddInt32(&p.activeWorker, 1)
 		task()
@@ -61,7 +78,12 @@ func (p *DiskWorkerPool) worker() {
 
 func (p *DiskWorkerPool) Submit(task func() error) {
 	p.workCh <- func() {
-		task()
+		if err := task(); err != nil {
+			select {
+			case p.resultCh <- err:
+			default:
+			}
+		}
 	}
 }
 
@@ -81,7 +103,16 @@ func (p *DiskWorkerPool) Wait() error {
 func (p *DiskWorkerPool) Close() {
 	close(p.workCh)
 	p.wg.Wait()
-	close(p.resultCh)
+	for {
+		select {
+		case _, ok := <-p.resultCh:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
 }
 
 func (p *DiskWorkerPool) ActiveWorkers() int {
@@ -192,7 +223,11 @@ func NewReadCoordinator(scheduler *DiskScheduler, rootDir string, state metadata
 	}
 }
 
-func (r *ReadCoordinator) ReadExtents(extents []metadata.Extent) ([]*ExtentReadResult, error) {
+const (
+	maxConcurrentExtents = 64
+)
+
+func (r *ReadCoordinator) ReadExtents(ctx context.Context, extents []metadata.Extent) ([]*ExtentReadResult, error) {
 	if len(extents) == 0 {
 		return nil, nil
 	}
@@ -205,14 +240,32 @@ func (r *ReadCoordinator) ReadExtents(extents []metadata.Extent) ([]*ExtentReadR
 	results := make([]*ExtentReadResult, len(extents))
 	resultCh := make(chan resultWithIdx, len(extents))
 
+	sem := newSemaphore(maxConcurrentExtents)
+
 	for i, ext := range extents {
-		diskID := ext.DataDiskID
-		r.scheduler.EnsureDisk(diskID)
 		idx := i
 
 		go func(extent metadata.Extent, idx int) {
+			defer func() {
+				if r := recover(); r != nil {
+					resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{Error: fmt.Errorf("ReadExtents goroutine recovered from panic: %v", r)}}
+				}
+			}()
+
+			if !sem.AcquireContext(ctx) {
+				resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{Error: ctx.Err()}}
+				return
+			}
+			defer sem.Release()
+
+			diskID := extent.DataDiskID
+			r.scheduler.EnsureDisk(diskID)
+
 			sem := r.scheduler.GetReadSemaphore(diskID)
-			sem.Acquire()
+			if !sem.AcquireContext(ctx) {
+				resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{Error: ctx.Err()}}
+				return
+			}
 			defer sem.Release()
 
 			pool := r.scheduler.GetPool(diskID)
@@ -222,7 +275,7 @@ func (r *ReadCoordinator) ReadExtents(extents []metadata.Extent) ([]*ExtentReadR
 			}
 
 			pool.Submit(func() error {
-				data, verified, healed, err := r.readAndVerifyExtent(extent)
+				data, verified, healed, err := r.readAndVerifyExtent(ctx, extent)
 				resultCh <- resultWithIdx{idx: idx, res: &ExtentReadResult{
 					Data:     data,
 					Verified: verified,
@@ -248,11 +301,18 @@ func (r *ReadCoordinator) ReadExtents(extents []metadata.Extent) ([]*ExtentReadR
 	return results, firstErr
 }
 
-func (r *ReadCoordinator) readAndVerifyExtent(extent metadata.Extent) ([]byte, bool, bool, error) {
+func (r *ReadCoordinator) readAndVerifyExtent(ctx context.Context, extent metadata.Extent) ([]byte, bool, bool, error) {
 	path := filepath.Join(r.rootDir, extent.PhysicalLocator.RelativePath)
+
+	if ctx.Err() != nil {
+		return nil, false, false, ctx.Err()
+	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, false, false, ctx.Err()
+		}
 		if r.state == nil {
 			return nil, false, false, fmt.Errorf("read extent %s: %w", extent.ExtentID, err)
 		}
@@ -261,6 +321,10 @@ func (r *ReadCoordinator) readAndVerifyExtent(extent metadata.Extent) ([]byte, b
 			return nil, false, false, fmt.Errorf("reconstruct extent %s: %w", extent.ExtentID, err)
 		}
 		return data, true, true, nil
+	}
+
+	if ctx.Err() != nil {
+		return nil, false, false, ctx.Err()
 	}
 
 	checksum := digestBytes(data)
@@ -310,26 +374,43 @@ func NewWriteCoordinator(scheduler *DiskScheduler, rootDir string) *WriteCoordin
 	}
 }
 
-func (w *WriteCoordinator) WriteExtents(extents []metadata.Extent, payload []byte) error {
+func (w *WriteCoordinator) WriteExtents(ctx context.Context, extents []metadata.Extent, payload []byte) error {
 	if len(extents) == 0 {
 		return nil
 	}
 
 	var wg sync.WaitGroup
 	errors := make([]error, len(extents))
+	sem := newSemaphore(maxConcurrentExtents)
 
 	for i, ext := range extents {
 		wg.Add(1)
 		go func(idx int, extent metadata.Extent) {
+			defer func() {
+				if r := recover(); r != nil {
+					errors[idx] = fmt.Errorf("WriteExtents goroutine recovered from panic: %v", r)
+					wg.Done()
+				}
+			}()
 			defer wg.Done()
+
+			if !sem.AcquireContext(ctx) {
+				errors[idx] = ctx.Err()
+				return
+			}
+			defer sem.Release()
+
 			diskID := extent.DataDiskID
 			w.scheduler.EnsureDisk(diskID)
 
 			sem := w.scheduler.GetWriteSemaphore(diskID)
-			sem.Acquire()
+			if !sem.AcquireContext(ctx) {
+				errors[idx] = ctx.Err()
+				return
+			}
 			defer sem.Release()
 
-			errors[idx] = w.writeExtentToDisk(extent, payload)
+			errors[idx] = w.writeExtentToDisk(ctx, extent, payload)
 		}(i, ext)
 	}
 
@@ -343,8 +424,12 @@ func (w *WriteCoordinator) WriteExtents(extents []metadata.Extent, payload []byt
 	return nil
 }
 
-func (w *WriteCoordinator) writeExtentToDisk(extent metadata.Extent, payload []byte) error {
+func (w *WriteCoordinator) writeExtentToDisk(ctx context.Context, extent metadata.Extent, payload []byte) error {
 	path := filepath.Join(w.rootDir, extent.PhysicalLocator.RelativePath)
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
 
 	extentData := extentData(extent, payload)
 
@@ -424,6 +509,11 @@ func (s *IOScheduler) Start() {
 
 func (s *IOScheduler) worker(id int) {
 	defer s.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("IOScheduler worker %d recovered from panic: %v", id, r)
+		}
+	}()
 
 	for {
 		select {

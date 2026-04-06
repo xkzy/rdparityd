@@ -4,21 +4,32 @@
 
 ## Status
 
-This storage engine is **production-ready for homelab use** (single parity, non-critical data). It includes:
+This storage engine is **production-ready** for the core data path. The supported production feature set is:
 
 - Binary journal with per-record BLAKE3-256 checksums
-- Binary metadata snapshots with BLAKE3-256 checksums
+- Binary metadata snapshots with BLAKE3-256 checksums  
 - Extent-based storage with real-time XOR parity
 - Crash-safe recovery with journal replay
 - FUSE filesystem mount
 - Compression support (zstd, lz4, snappy, gzip, xz)
-- Maintenance ops (trim, defrag, snapshot, drive sleep)
+- Read verification and self-heal
+- Scrub and rebuild operations
+- Metrics and health monitoring via Unix socket control
+
+The following admin features are present in the repo but are **not supported in the current production feature set** and return explicit errors:
+
+- Trim
+- Defrag
+- Snapshot
+- Drive sleep / wake management
+- Protection-state mutation
 
 ## Design choices locked in
 
 | Topic | Choice |
 | --- | --- |
 | Core implementation language | **Go** |
+| Control interface | **Unix socket** (no HTTP) |
 | Default extent size | **1 MiB** |
 | Parity mode | **Single dedicated parity disk** |
 | Parity group width | **Up to 8 data extents + 1 parity extent** |
@@ -31,13 +42,13 @@ This storage engine is **production-ready for homelab use** (single parity, non-
 ## Repository layout
 
 ```text
-cmd/rtparityd        HTTP daemon with REST API
+cmd/rtparityd        Daemon with Unix socket control (JSON protocol)
 cmd/rtpctl           CLI tool (sim, demo, mount, check-invariants)
 internal/fusefs      FUSE filesystem implementation
 internal/journal    Core engine: journal, coordinator, recovery, scrub, rebuild, invariants, compression
-internal/metadata    Binary metadata types and store
-internal/parity      XOR parity simulator (testing only)
-docs/                Architecture, format, invariants, durability
+internal/metadata   Binary metadata types and store
+internal/metrics     Observability (counters, gauges, histograms)
+internal/parity     XOR parity simulator (testing only)
 ```
 
 ## Quick start
@@ -45,165 +56,52 @@ docs/                Architecture, format, invariants, durability
 ```bash
 make test
 
-go run ./cmd/rtpctl simulate \
-  -disks 3 \
-  -extents 8 \
-  -extent-bytes 4096 \
-  -corrupt-disk 1 \
-  -corrupt-extent 2
+# Run daemon with Unix socket control
+go run ./cmd/rtparityd \
+  -socket /var/run/rtparityd/rtparityd.sock \
+  -metadata-path /var/lib/rtparityd/metadata.bin \
+  -journal-path /var/lib/rtparityd/journal.bin
+
+# CLI operations via socket (requires separate client or nc)
+# Or use rtpctl for direct file operations:
 
 go run ./cmd/rtpctl allocate-demo
 go run ./cmd/rtpctl write-demo
 go run ./cmd/rtpctl read-demo
 go run ./cmd/rtpctl scrub-demo
-go run ./cmd/rtpctl scrub-history
 go run ./cmd/rtpctl rebuild-demo -disk disk-01
-go run ./cmd/rtpctl rebuild-all-demo
 go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -full
 
-go run ./cmd/rtparityd -listen :8080
-curl http://127.0.0.1:8080/health
-curl http://127.0.0.1:8080/v1/journal
-curl http://127.0.0.1:8080/v1/metadata
-curl "http://127.0.0.1:8080/v1/read?path=/shares/demo/write.bin"
-curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
-curl http://127.0.0.1:8080/v1/scrub/history
-curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
-curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
+# Mount as FUSE filesystem
+go run ./cmd/rtpctl mount -mountpoint /mnt/pool
 ```
 
-## Prototype commands
+## Daemon socket protocol
 
-### Simulate parity and recovery
+The daemon exposes a JSON-based Unix socket protocol at `/var/run/rtparityd/rtparityd.sock`:
 
 ```bash
-go run ./cmd/rtpctl simulate -disks 3 -extents 8 -extent-bytes 4096
+# Health check
+echo '{"id":"1","op":"health"}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Metrics
+echo '{"id":"1","op":"metrics"}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Write file
+echo '{"id":"2","op":"write","params":{"path":"/shares/demo/file.bin","payload":"dGVzdA==","synthetic":false}}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Read file
+echo '{"id":"3","op":"read","params":{"path":"/shares/demo/file.bin"}}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Scrub with repair
+echo '{"id":"4","op":"scrub","params":{"repair":true}}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Rebuild disk
+echo '{"id":"5","op":"rebuild","params":{"disk":"disk-01"}}' | nc -U /var/run/rtparityd/rtparityd.sock
+
+# Status
+echo '{"id":"6","op":"status"}' | nc -U /var/run/rtparityd/rtparityd.sock
 ```
-
-### Emit a sample pool metadata document
-
-```bash
-go run ./cmd/rtpctl sample-pool
-```
-
-### Exercise the durable journal replay prototype
-
-```bash
-go run ./cmd/rtpctl journal-demo
-```
-
-### Allocate extents into the durable metadata snapshot
-
-```bash
-go run ./cmd/rtpctl allocate-demo
-```
-
-### Execute a full journaled write transaction
-
-```bash
-go run ./cmd/rtpctl write-demo
-
-# Write a real file's bytes (round-trips on read-demo):
-go run ./cmd/rtpctl write-demo -input-file /path/to/real.bin -path /shares/demo/real.bin
-```
-
-### Verify and self-heal a stored file on read
-
-```bash
-go run ./cmd/rtpctl read-demo -metadata-path /tmp/rtparityd-metadata.bin -path /shares/demo/write.bin
-```
-
-### Scrub the full metadata snapshot for corruption
-
-```bash
-go run ./cmd/rtpctl scrub-demo -metadata-path /tmp/rtparityd-metadata.bin -repair=true
-```
-
-Or via the daemon API:
-
-```bash
-curl -X POST "http://127.0.0.1:8080/v1/scrub?repair=true"
-```
-
-### Inspect persisted scrub history
-
-```bash
-go run ./cmd/rtpctl scrub-history -metadata-path /tmp/rtparityd-metadata.bin
-curl http://127.0.0.1:8080/v1/scrub/history
-```
-
-### Rebuild a missing data-disk extent from parity
-
-```bash
-go run ./cmd/rtpctl rebuild-demo -metadata-path /tmp/rtparityd-metadata.bin -disk disk-01
-```
-
-Or via the daemon API:
-
-```bash
-curl -X POST "http://127.0.0.1:8080/v1/rebuild?disk=disk-01"
-```
-
-### Rebuild all data disks with missing extents
-
-```bash
-go run ./cmd/rtpctl rebuild-all-demo -metadata-path /tmp/rtparityd-metadata.bin
-curl -X POST "http://127.0.0.1:8080/v1/rebuild/all"
-```
-
-### Verify storage invariants
-
-Verify all structural invariants (in-memory, no disk IO):
-
-```bash
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -journal-path /tmp/rtparityd-journal.log
-```
-
-Full integrity check including on-disk extent and parity data:
-
-```bash
-go run ./cmd/rtpctl check-invariants -metadata-path /tmp/rtparityd-metadata.bin -journal-path /tmp/rtparityd-journal.log -full
-```
-
-See `docs/invariants.md` for the full invariant specification.
-
-### Mount the pool as a FUSE filesystem
-
-```bash
-# Create the mountpoint.
-mkdir -p /mnt/pool
-
-# Mount (blocks until Ctrl-C or fusermount -u /mnt/pool).
-go run ./cmd/rtpctl mount \
-  -mountpoint /mnt/pool \
-  -metadata-path /tmp/rtparityd/metadata.bin \
-  -journal-path  /tmp/rtparityd/journal.log \
-  -pool-name demo
-
-# In another terminal: write, list, read via normal POSIX APIs.
-echo "hello rdparityd" > /mnt/pool/shares/demo/hello.txt
-ls -la /mnt/pool/shares/demo/
-cat /mnt/pool/shares/demo/hello.txt
-
-# Unmount.
-fusermount -u /mnt/pool
-```
-
-Files written through the FUSE mount are committed to the coordinator's journaled
-write path (full parity + checksum) on `close(2)`. They survive unmount/remount
-and are also visible via `curl http://127.0.0.1:8080/v1/read?path=/shares/demo/hello.txt`.
-Startup recovery runs automatically on mount so any interrupted prior writes are
-rolled forward before the filesystem begins serving requests.
-
-### Simulate a crash after `data-written`
-
-```bash
-go run ./cmd/rtpctl write-demo -fail-after data-written
-```
-
-Then point the daemon at the emitted `metadata_path` and `journal_path`.
-The current prototype will automatically roll that interrupted write forward on startup when recovery is possible, and `/health` will report `recovered_transactions`.
 
 ## Features
 
@@ -219,11 +117,23 @@ The current prototype will automatically roll that interrupted write forward on 
 ### Compression (optional per-extent)
 - zstd, lz4, snappy, gzip, xz
 
-### Maintenance Operations
-- Trim (btrfs/ext4/xfs)
-- Defrag (btrfs)
-- Snapshot (btrfs subvolumes or metadata)
+### Observability
+- **Metrics** - Operation counters, error counts, latency histograms
+- **Health** - Pool status, disk health, uptime
+- **Status** - Full pool state including invariant violations
+
+### Supported Admin Operations
+- Read-only health and diagnostics
+- Scrub with optional repair
+- Rebuild single disk / rebuild all missing data extents
+- Protection status inspection
+
+### Unsupported Admin Operations
+- Trim
+- Defrag
+- Snapshot
 - Drive sleep management
+- Protection-state mutation
 
 ### Testing
 - Crash injection at every transaction stage
@@ -240,7 +150,7 @@ The current prototype will automatically roll that interrupted write forward on 
 5. ~~Introduce a FUSE proof of concept.~~ ✅ Done
 6. ~~Add compression support.~~ ✅ Done
 7. ~~Add maintenance operations.~~ ✅ Done
-8. **Production-ready gate** - In progress
+8. ~~Production-ready gate~~ ✅ Done
 
 ## Project pitch
 

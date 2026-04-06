@@ -21,7 +21,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 ## Status
 
-This storage engine is **production-ready** for the core data path. The supported production feature set is:
+This storage engine is **pilot-grade / controlled-production** for the core data path. It is suitable for:
+
+- Single-team, self-managed environments
+- Non-mission-critical or well-backed-up data
+- Environments where you can perform destructive recovery testing
+- Workloads that don't require mature admin features (snapshots, trim, defrag)
+
+**Not yet production-grade ready for:**
+- Business-critical primary storage
+- Multi-tenant or compliance-heavy deployments
+- Environments requiring battle-tested operational history
+
+The supported feature set is:
 
 - Binary journal with per-record BLAKE3-256 checksums
 - Binary metadata snapshots with BLAKE3-256 checksums  
@@ -32,8 +44,10 @@ This storage engine is **production-ready** for the core data path. The supporte
 - Read verification and self-heal
 - Scrub and rebuild operations
 - Metrics and health monitoring via Unix socket control
+- Root user authentication on control socket
+- Request size limits for resource protection
 
-The following admin features are present in the repo but are **not supported in the current production feature set** and return explicit errors:
+The following admin features are present in the repo but are **not supported in the current feature set** and return explicit errors:
 
 - Trim
 - Defrag
@@ -158,7 +172,7 @@ echo '{"id":"6","op":"status"}' | nc -U /var/run/rtparityd/rtparityd.sock
 - Property-based tests
 - Benchmark tests
 
-## Next milestones
+## Milestones & Roadmap
 
 1. ~~Persist the journal to disk and replay it on startup.~~ ✅ Done
 2. ~~Add an extent allocator and durable metadata store.~~ ✅ Done
@@ -167,7 +181,22 @@ echo '{"id":"6","op":"status"}' | nc -U /var/run/rtparityd/rtparityd.sock
 5. ~~Introduce a FUSE proof of concept.~~ ✅ Done
 6. ~~Add compression support.~~ ✅ Done
 7. ~~Add maintenance operations.~~ ✅ Done
-8. ~~Production-ready gate~~ ✅ Done
+8. ~~Core data path pilot-grade release~~ ✅ Done
+9. **Security hardening** - In progress (peer auth, request limits)
+10. **Admin features** - Future (snapshots, trim, defrag)
+11. **Production-grade maturity** - Long-term
+
+## Testing
+
+Run tests before each deployment:
+```bash
+make test
+go test ./... -v -count=1
+```
+
+## Security Model
+
+The control socket requires **root user** authentication by default. This is a privileged control interface intended for trusted local administrators only. Non-root users cannot connect unless `-require-root=false` is specified (not recommended for production).
 
 ## Project pitch
 

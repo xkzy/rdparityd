@@ -32,14 +32,22 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/xkzy/rdparityd/internal/journal"
 	"github.com/xkzy/rdparityd/internal/metadata"
 	"github.com/xkzy/rdparityd/internal/metrics"
 )
 
 const (
-	socketPerm    = 0o660
-	daemonVersion = "0.1.0"
+	socketPerm     = 0o660
+	daemonVersion  = "0.1.0"
+	maxRequestSize = 1024 * 1024             // 1MB max JSON request
+	maxWriteSize   = 1024 * 1024 * 1024 * 10 // 10GB max write size
+)
+
+var (
+	requireRootUser *bool
 )
 
 type runtimeState struct {
@@ -76,6 +84,7 @@ func main() {
 	poolName := flag.String("pool-name", "demo", "prototype pool name")
 	journalPath := flag.String("journal-path", "/var/lib/rtparityd/journal.bin", "journal path")
 	metadataPath := flag.String("metadata-path", "/var/lib/rtparityd/metadata.bin", "metadata snapshot path")
+	requireRootUser = flag.Bool("require-root", true, "require root user for socket connections (disable for non-root CLI)")
 	flag.Parse()
 
 	if !filepath.IsAbs(*socketPath) {
@@ -158,7 +167,12 @@ func main() {
 func handleConnection(conn net.Conn, state *runtimeState) {
 	defer conn.Close()
 
-	dec := json.NewDecoder(conn)
+	if !checkPeerCredentials(conn) {
+		log.Printf("rejected connection: invalid peer credentials")
+		return
+	}
+
+	dec := json.NewDecoder(io.LimitReader(conn, maxRequestSize))
 	enc := json.NewEncoder(conn)
 
 	for {
@@ -184,6 +198,41 @@ func handleConnection(conn net.Conn, state *runtimeState) {
 			return
 		}
 	}
+}
+
+func checkPeerCredentials(conn net.Conn) bool {
+	if !*requireRootUser {
+		return true
+	}
+
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		log.Printf("connection is not a Unix socket, rejecting")
+		return false
+	}
+
+	var ucred *unix.Ucred
+	var err error
+	rawConn, err := unixConn.SyscallConn()
+	if err != nil {
+		log.Printf("failed to get raw conn: %v", err)
+		return false
+	}
+
+	err = rawConn.Control(func(fd uintptr) {
+		ucred, err = unix.GetsockoptUcred(int(fd), unix.SOL_SOCKET, unix.SO_PEERCRED)
+	})
+	if err != nil {
+		log.Printf("failed to get peer credentials: %v", err)
+		return false
+	}
+
+	if ucred == nil || ucred.Uid != 0 {
+		log.Printf("rejected: non-root user connected")
+		return false
+	}
+
+	return true
 }
 
 func sendError(enc *json.Encoder, id string, err error) {
@@ -268,6 +317,12 @@ func writeOp(params json.RawMessage, state *runtimeState) (json.RawMessage, erro
 	}
 	if p.Payload == nil && !p.Synthetic && p.Size <= 0 {
 		return nil, errors.New("payload or size required")
+	}
+	if p.Size > maxWriteSize {
+		return nil, fmt.Errorf("size exceeds maximum allowed (%d bytes)", maxWriteSize)
+	}
+	if p.Size < 0 {
+		return nil, errors.New("size must be non-negative")
 	}
 
 	state.mu.RLock()

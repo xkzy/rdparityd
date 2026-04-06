@@ -124,9 +124,6 @@ Usage:
   rtpctl sleep-status [flags]
   rtpctl protection-status [flags]
   rtpctl set-protection [flags]
-
-Unsupported in the current production feature set:
-  trim, defrag, snapshot, enable-sleep, disable-sleep, wake-disk, sleep-disk, sleep-status, set-protection
 `)
 }
 

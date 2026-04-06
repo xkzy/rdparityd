@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -15,7 +16,7 @@ func TestRenameFileForcesRecoveryBeforeMetadataMutation(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	basePayload := makePayload(1024, 0x11)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "rename-recovery-guard",
 		LogicalPath:    "/test/base.bin",
 		AllowSynthetic: true,
@@ -25,7 +26,7 @@ func TestRenameFileForcesRecoveryBeforeMetadataMutation(t *testing.T) {
 	}
 
 	pendingPayload := makePayload(2048, 0x22)
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "rename-recovery-guard",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,
@@ -78,7 +79,7 @@ func TestAddDiskForcesRecoveryBeforeMetadataMutation(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	pendingPayload := makePayload(1024, 0x33)
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "disk-recovery-guard",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,

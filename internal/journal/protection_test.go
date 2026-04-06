@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"testing"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -12,7 +13,7 @@ func TestProtectionStatus_OneDisk(t *testing.T) {
 	journalPath := dir + "/journal.log"
 	coord := NewCoordinator(metaPath, journalPath)
 
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,
@@ -64,7 +65,7 @@ func TestExtentProtectionClass(t *testing.T) {
 	journalPath := dir + "/journal.log"
 	coord := NewCoordinator(metaPath, journalPath)
 
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test",
 		LogicalPath:    "/test/file.bin",
 		AllowSynthetic: true,
@@ -93,5 +94,27 @@ func TestExtentProtectionClass_NotFound(t *testing.T) {
 	_, err := coord.ExtentProtectionClass("nonexistent")
 	if err == nil {
 		t.Error("expected error for nonexistent extent")
+	}
+}
+
+func TestSetPoolProtectionStateRejectsInvalidValue(t *testing.T) {
+	dir := t.TempDir()
+	metaPath := dir + "/metadata.bin"
+	journalPath := dir + "/journal.log"
+	coord := NewCoordinator(metaPath, journalPath)
+
+	if err := coord.SetPoolProtectionState(metadata.PoolProtectionState("invalid")); err == nil {
+		t.Fatal("expected invalid protection state to be rejected")
+	}
+}
+
+func TestSetPoolProtectionStateUnsupportedForValidValue(t *testing.T) {
+	dir := t.TempDir()
+	metaPath := dir + "/metadata.bin"
+	journalPath := dir + "/journal.log"
+	coord := NewCoordinator(metaPath, journalPath)
+
+	if err := coord.SetPoolProtectionState(metadata.ProtectionParity); err == nil {
+		t.Fatal("expected protection state mutation to be unsupported")
 	}
 }

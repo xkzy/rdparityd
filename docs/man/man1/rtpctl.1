@@ -1,0 +1,121 @@
+.TH RTPCTL 1 "April 2026" "rtparityd 0.1.0"
+.SH NAME
+rtpctl \- CLI tool for rtparityd storage engine
+
+.SH SYNOPSIS
+.B rtpctl
+\fICOMMAND\fR [\fIOPTIONS\fR]
+
+.SH DESCRIPTION
+\fBrtpctl\fR is a command-line tool for testing, debugging, and managing the
+rtparityd storage engine. Unlike rtparityctl which communicates with a running
+daemon, rtpctl directly accesses the journal and metadata files.
+
+.SH COMMANDS
+.SS Demo Commands
+.TP
+.B allocate-demo
+Allocate sample extents to demonstrate extent allocation.
+.TP
+.B write-demo
+Execute a full journaled write transaction with synthetic data.
+.TP
+.B read-demo
+Verify and self-heal a stored file.
+.TP
+.B scrub-demo
+Scrub metadata snapshot for corruption with optional repair.
+.TP
+.B rebuild-demo
+Rebuild a data disk from parity.
+.TP
+.B rebuild-all-demo
+Rebuild all data disks with missing extents.
+.TP
+.B check-invariants
+Verify storage invariants (I1-I15).
+
+.SS Simulation Commands
+.TP
+.BI simulate " [OPTIONS]"
+Simulate parity and recovery testing.
+Options:
+.RS
+.TP
+.B \-disks N
+Number of disks (default: 3)
+.TP
+.B \-extents N
+Number of extents per parity group (default: 8)
+.TP
+.B \-extent-bytes N
+Extent size in bytes (default: 4096)
+.TP
+.B \-corrupt-disk N
+Corrupt a specific disk
+.TP
+.B \-corrupt-extent N
+Corrupt a specific extent
+.RE
+
+.SS FUSE Mount
+.TP
+.B mount
+Mount pool as FUSE filesystem.
+Options:
+.RS
+.TP
+.B \-mountpoint PATH
+FUSE mount point (required)
+.TP
+.B \-metadata-path PATH
+Metadata snapshot path
+.TP
+.B \-journal-path PATH
+Journal path
+.TP
+.B \-pool-name NAME
+Pool name
+.RE
+
+.SH COMMON OPTIONS
+.TP
+.BI \-metadata\-path " PATH"
+Metadata snapshot path (default: /tmp/rtparityd-metadata.bin)
+.TP
+.BI \-journal\-path " PATH"
+Journal path (default: /tmp/rtparityd-journal.bin)
+.TP
+.BI \-pool\-name " NAME"
+Pool name (default: demo)
+
+.SH EXAMPLES
+.nf
+# Run allocation demo
+rtpctl allocate-demo
+
+# Write demo file
+rtpctl write-demo
+
+# Read and verify
+rtpctl read-demo
+
+# Mount as filesystem
+rtpctl mount -mountpoint /mnt/pool
+
+# Run simulation
+rtpctl simulate -disks 4 -extents 8
+
+# Check invariants
+rtpctl check-invariants -metadata-path /var/lib/rtparityd/metadata.bin
+.fi
+
+.SH SEE ALSO
+.BR rtparityd (8),
+.BR rtparityctl (1)
+
+.SH AUTHOR
+Written by the rtparityd project.
+
+.SH LICENSE
+GNU General Public License version 2

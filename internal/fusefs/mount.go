@@ -51,6 +51,10 @@ func Mount(mountpoint string, coord *journal.Coordinator, opts Options) (*fuse.S
 		opts.PoolName = poolName
 	}
 
+	if err := coord.EnsureInitialized(opts.PoolName); err != nil {
+		return nil, err
+	}
+
 	root := &dirNode{
 		coord:    coord,
 		prefix:   "",

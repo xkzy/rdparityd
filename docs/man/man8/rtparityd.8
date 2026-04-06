@@ -1,0 +1,96 @@
+.TH RTPARITYD 8 "April 2026" "rtparityd 0.1.0"
+.SH NAME
+rtparityd \- Linux storage engine with real-time parity protection
+
+.SH SYNOPSIS
+.B rtparityd
+[\-socket \fIPATH\fR]
+[\-metadata\-path \fIPATH\fR]
+[\-journal\-path \fIPATH\fR]
+[\-pool\-name \fINAME\fR]
+
+.SH DESCRIPTION
+\fBrtparityd\fR is a Linux storage engine that provides real-time XOR parity
+protection for extents written to disk. It maintains a crash-safe binary
+journal and performs automatic recovery on startup.
+
+\fBrtparityd\fR does not expose an HTTP API. Instead, it listens on a Unix
+domain socket for JSON-based command requests.
+
+.SH OPTIONS
+.TP
+.BI \-socket " PATH"
+Unix socket path for control interface (default: /var/run/rtparityd/rtparityd.sock)
+.TP
+.BI \-metadata\-path " PATH"
+Binary metadata snapshot path (default: /var/lib/rtparityd/metadata.bin)
+.TP
+.BI \-journal\-path " PATH"
+Binary journal path (default: /var/lib/rtparityd/journal.bin)
+.TP
+.BI \-pool\-name " NAME"
+Pool name (default: demo)
+
+.SH SOCKET PROTOCOL
+The daemon accepts JSON commands over the Unix socket. Each command has the
+format:
+
+.nf
+{"id": "1", "op": "OPERATION", "params": {...}}
+.fi
+
+.SS Operations
+.TP
+.B health
+Returns pool health status including alert level and uptime.
+.TP
+.B metrics
+Returns operation counters and latency histograms.
+.TP
+.B status
+Returns full pool status including metadata, journal state, and disks.
+.TP
+.B write
+Writes a file. Params: path, payload (base64), synthetic (bool).
+.TP
+.B read
+Reads a file. Params: path.
+.TP
+.B scrub
+Runs integrity check. Params: repair (bool).
+.TP
+.B rebuild
+Rebuilds extents from a disk. Params: disk (string).
+.TP
+.B rebuild\-all
+Rebuilds all disks with missing extents.
+
+.SH FILES
+.TP
+.B /var/lib/rtparityd/
+Data directory for metadata and journal files.
+.TP
+.B /var/run/rtparityd/
+Runtime directory for socket and pid file.
+.TP
+.B /var/run/rtparityd/rtparityd.sock
+Unix socket for control interface.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error (invalid arguments, socket failure, etc.)
+
+.SH SEE ALSO
+.BR rtpctl (1),
+.BR rtparityctl (1),
+.BR rtparityd.service (8)
+
+.SH AUTHOR
+Written by the rtparityd project.
+
+.SH LICENSE
+GNU General Public License version 2

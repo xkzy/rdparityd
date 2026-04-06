@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestPoolNameReturnsPoolNameAfterWrite(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	payload := bytes.Repeat([]byte("hello"), 1024)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "mypool",
 		LogicalPath:    "/file.txt",
 		AllowSynthetic: true,
@@ -71,7 +72,7 @@ func TestReadMetaReturnsCachedStateAfterWrite(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/file.txt",
 		AllowSynthetic: true,

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestWriteDoesNotPoisonParityFromCorruptedCommittedExtent(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	resA, err := coord.WriteFile(WriteRequest{
+	resA, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "poison-guard",
 		LogicalPath:    "/test/a.bin",
 		AllowSynthetic: true,
@@ -42,7 +43,7 @@ func TestWriteDoesNotPoisonParityFromCorruptedCommittedExtent(t *testing.T) {
 	}
 
 	// B should land in the same parity group and must not poison parity.
-	resB, err := coord.WriteFile(WriteRequest{
+	resB, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "poison-guard",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,7 +22,7 @@ func TestCrashRepairExtentScrubRecoveryMatrix(t *testing.T) {
 			journalPath := filepath.Join(dir, "journal.log")
 			coord := NewCoordinator(metaPath, journalPath)
 
-			writeResult, err := coord.WriteFile(WriteRequest{
+			writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:       "scrub-repair-crash",
 				LogicalPath:    "/test/extent.bin",
 				AllowSynthetic: true,
@@ -87,7 +88,7 @@ func TestCrashRepairParityScrubRecoveryMatrix(t *testing.T) {
 			journalPath := filepath.Join(dir, "journal.log")
 			coord := NewCoordinator(metaPath, journalPath)
 
-			writeResult, err := coord.WriteFile(WriteRequest{
+			writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:       "parity-repair-crash",
 				LogicalPath:    "/test/parity.bin",
 				AllowSynthetic: true,
@@ -145,7 +146,7 @@ func TestCrashRepairRebuildRecoveryMatrix(t *testing.T) {
 			journalPath := filepath.Join(dir, "journal.log")
 			coord := NewCoordinator(metaPath, journalPath)
 
-			writeResult, err := coord.WriteFile(WriteRequest{
+			writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:       "rebuild-repair-crash",
 				LogicalPath:    "/test/rebuild.bin",
 				AllowSynthetic: true,

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -10,7 +11,7 @@ func TestWriteFileRejectsImplicitSyntheticPayload(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "demo",
 		LogicalPath: "/prod/reject.bin",
 		SizeBytes:   4096,
@@ -27,7 +28,7 @@ func TestWriteFileAllowsExplicitSyntheticOptIn(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/prod/explicit-synth.bin",
 		AllowSynthetic: true,

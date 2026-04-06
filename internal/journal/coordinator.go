@@ -1,14 +1,18 @@
 package journal
 
 import (
+	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -17,6 +21,20 @@ import (
 // ChecksumAlgorithm re-exports metadata.ChecksumAlgorithm for callers that
 // import only the journal package. Both constants refer to the same value.
 const ChecksumAlgorithm = metadata.ChecksumAlgorithm
+
+var (
+	ErrLogicalPathRequired = errors.New("logical path is required")
+	ErrMissingQueryParam   = errors.New("missing required query parameter")
+	ErrPayloadRequired     = errors.New("payload is required")
+	ErrDiskNotFound        = errors.New("disk not found")
+	ErrNoExtentsMapped     = errors.New("no extents mapped")
+	ErrRequiresReplay      = errors.New("requires replay")
+	ErrRefusingStartup     = errors.New("refusing startup")
+	ErrManualRecoveryReq   = errors.New("manual recovery required")
+	ErrCorrupt             = errors.New("corrupt")
+	ErrUnrecoverable       = errors.New("unrecoverable")
+	ErrUnsupportedOp       = errors.New("unsupported")
+)
 
 type WriteRequest struct {
 	PoolName    string `json:"pool_name"`
@@ -201,7 +219,9 @@ func (c *Coordinator) saveStateSnapshot(state metadata.SampleState) (metadata.Sn
 func (c *Coordinator) publishCommittedState(state metadata.SampleState) {
 	c.cachedState = &state
 	c.cachedStateSet = true
-	_ = c.journal.CompactIfClean()
+	if err := c.journal.CompactIfClean(); err != nil {
+		log.Printf("warning: CompactIfClean failed: %v", err)
+	}
 }
 
 // commitState saves state to disk and updates the in-memory cache.
@@ -258,7 +278,7 @@ func (c *Coordinator) invalidateCache() {
 	c.cachedState = nil
 }
 
-func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
+func (c *Coordinator) WriteFile(ctx context.Context, req WriteRequest) (WriteResult, error) {
 	if c == nil {
 		return WriteResult{}, fmt.Errorf("coordinator is nil")
 	}
@@ -273,7 +293,7 @@ func (c *Coordinator) WriteFile(req WriteRequest) (WriteResult, error) {
 		req.PoolName = "demo"
 	}
 	if req.LogicalPath == "" {
-		return WriteResult{}, fmt.Errorf("logical path is required")
+		return WriteResult{}, ErrLogicalPathRequired
 	}
 	if req.Payload != nil {
 		req.SizeBytes = int64(len(req.Payload))
@@ -718,6 +738,9 @@ func validateExtentRelativePath(path string) error {
 // syntheticExtentBytes generates deterministic fake data for an extent.
 // Used only in demo and test paths where no real payload is supplied.
 func syntheticExtentBytes(extent metadata.Extent) []byte {
+	if extent.Length <= 0 || extent.Length > MaxPayloadSize {
+		return []byte{}
+	}
 	seed := fmt.Sprintf("%s|%s|%d|%d|%s", extent.ExtentID, extent.FileID, extent.LogicalOffset, extent.Length, extent.ParityGroupID)
 	data := make([]byte, extent.Length)
 	block := blake3.Sum256([]byte(seed))
@@ -910,7 +933,7 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 // storage, then closes the file. A crash after writeSyncFile returns cannot
 // lose the written bytes.
 func writeSyncFile(path string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|unix.O_NOFOLLOW, perm)
 	if err != nil {
 		return fmt.Errorf("open file for write: %w", err)
 	}

@@ -111,17 +111,21 @@ func CheckTargetedWriteIntegrity(rootDir string, state metadata.SampleState, ext
 		}
 	}
 
-	for _, v := range checkE1ExtentChecksums(rootDir, state) {
+	getMountpoint := func(diskID string) string {
+		return resolveDiskMountpoint(state, diskID, rootDir)
+	}
+
+	for _, v := range checkE1ExtentChecksumsWithMountpoints(rootDir, getMountpoint, state) {
 		if _, ok := affectedExtentIDs[v.Entity]; ok {
 			vs = append(vs, v)
 		}
 	}
-	for _, v := range checkP2ParityChecksums(rootDir, state) {
+	for _, v := range checkP2ParityChecksumsWithMountpoints(rootDir, getMountpoint, state) {
 		if _, ok := affectedGroupIDs[v.Entity]; ok {
 			vs = append(vs, v)
 		}
 	}
-	for _, v := range checkP3ParityXOR(rootDir, state) {
+	for _, v := range checkP3ParityXORWithMountpoints(rootDir, getMountpoint, state) {
 		if _, ok := affectedGroupIDs[v.Entity]; ok {
 			vs = append(vs, v)
 		}
@@ -147,12 +151,17 @@ func CheckJournalInvariants(records []Record) []InvariantViolation {
 // For compressed extents, the on-disk size is CompressedSize and checksum
 // is computed on the compressed data.
 func checkE1ExtentChecksums(rootDir string, state metadata.SampleState) []InvariantViolation {
+	return checkE1ExtentChecksumsWithMountpoints(rootDir, func(diskID string) string { return rootDir }, state)
+}
+
+func checkE1ExtentChecksumsWithMountpoints(rootDir string, getMountpoint func(diskID string) string, state metadata.SampleState) []InvariantViolation {
 	var vs []InvariantViolation
 	for _, extent := range state.Extents {
 		if extent.Checksum == "" {
 			continue // not yet committed; skip
 		}
-		path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
+		diskMountpoint := validateAndNormalizeMountpoint(getMountpoint(extent.DataDiskID), rootDir)
+		path := filepath.Join(diskMountpoint, extent.PhysicalLocator.RelativePath)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			vs = append(vs, InvariantViolation{
@@ -344,12 +353,17 @@ func checkP1ParityGroupsReferenced(state metadata.SampleState) []InvariantViolat
 
 // P2: every parity group's parity_checksum must match its on-disk parity file.
 func checkP2ParityChecksums(rootDir string, state metadata.SampleState) []InvariantViolation {
+	return checkP2ParityChecksumsWithMountpoints(rootDir, func(diskID string) string { return rootDir }, state)
+}
+
+func checkP2ParityChecksumsWithMountpoints(rootDir string, getMountpoint func(diskID string) string, state metadata.SampleState) []InvariantViolation {
 	var vs []InvariantViolation
 	for _, group := range state.ParityGroups {
 		if group.ParityChecksum == "" {
 			continue // not yet written
 		}
-		path := filepath.Join(rootDir, "parity", group.ParityGroupID+".bin")
+		parityMountpoint := validateAndNormalizeMountpoint(getMountpoint(group.ParityDiskID), rootDir)
+		path := filepath.Join(parityMountpoint, "parity", group.ParityGroupID+".bin")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			vs = append(vs, InvariantViolation{
@@ -376,6 +390,10 @@ func checkP2ParityChecksums(rootDir string, state metadata.SampleState) []Invari
 // P3: the parity file bytes must equal the XOR of all member extent bytes
 // (each zero-padded to the length of the longest member).
 func checkP3ParityXOR(rootDir string, state metadata.SampleState) []InvariantViolation {
+	return checkP3ParityXORWithMountpoints(rootDir, func(diskID string) string { return rootDir }, state)
+}
+
+func checkP3ParityXORWithMountpoints(rootDir string, getMountpoint func(diskID string) string, state metadata.SampleState) []InvariantViolation {
 	// Build extent-by-ID index for fast lookup.
 	extentByID := make(map[string]metadata.Extent, len(state.Extents))
 	for _, e := range state.Extents {
@@ -398,7 +416,8 @@ func checkP3ParityXOR(rootDir string, state metadata.SampleState) []InvariantVio
 				groupOK = false
 				break
 			}
-			path := filepath.Join(rootDir, extent.PhysicalLocator.RelativePath)
+			extentMountpoint := validateAndNormalizeMountpoint(getMountpoint(extent.DataDiskID), rootDir)
+			path := filepath.Join(extentMountpoint, extent.PhysicalLocator.RelativePath)
 			data, err := os.ReadFile(path)
 			if err != nil {
 				vs = append(vs, InvariantViolation{
@@ -441,7 +460,8 @@ func checkP3ParityXOR(rootDir string, state metadata.SampleState) []InvariantVio
 		}
 
 		// Read actual parity file.
-		parityPath := filepath.Join(rootDir, "parity", group.ParityGroupID+".bin")
+		parityMountpoint := validateAndNormalizeMountpoint(getMountpoint(group.ParityDiskID), rootDir)
+		parityPath := filepath.Join(parityMountpoint, "parity", group.ParityGroupID+".bin")
 		actual, err := os.ReadFile(parityPath)
 		if err != nil {
 			vs = append(vs, InvariantViolation{

@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestScrubForcesRecoveryBeforeScanningMetadata(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := makePayload(4096, 0x61)
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "scrub-recovery-guard",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,
@@ -60,7 +61,7 @@ func TestRebuildForcesRecoveryBeforeSelectingExtents(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := makePayload(4096, 0x72)
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "rebuild-recovery-guard",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,

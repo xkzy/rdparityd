@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -106,6 +107,9 @@ Usage:
   rtpctl sleep-status [flags]
   rtpctl protection-status [flags]
   rtpctl set-protection [flags]
+
+Unsupported in the current production feature set:
+  trim, defrag, snapshot, enable-sleep, disable-sleep, wake-disk, sleep-disk, sleep-status, set-protection
 `)
 }
 
@@ -255,7 +259,11 @@ func runWriteDemo(args []string) error {
 	}
 
 	coordinator := journal.NewCoordinator(*metadataPath, *journalPath)
-	result, err := coordinator.WriteFile(req)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coordinator.WriteFile(ctx, req)
 	if err != nil {
 		return err
 	}
@@ -275,8 +283,8 @@ func runWriteDemo(args []string) error {
 
 func runReadDemo(args []string) error {
 	fs := flag.NewFlagSet("read-demo", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
-	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.bin"), "journal log path")
 	filePath := fs.String("path", "/shares/demo/write.bin", "logical file path to read and verify")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -294,8 +302,8 @@ func runReadDemo(args []string) error {
 
 func runScrubDemo(args []string) error {
 	fs := flag.NewFlagSet("scrub-demo", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
-	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.bin"), "journal log path")
 	repair := fs.Bool("repair", true, "repair corrupted extents or parity when possible")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -313,7 +321,7 @@ func runScrubDemo(args []string) error {
 
 func runScrubHistory(args []string) error {
 	fs := flag.NewFlagSet("scrub-history", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -334,8 +342,8 @@ func runScrubHistory(args []string) error {
 
 func runRebuildDemo(args []string) error {
 	fs := flag.NewFlagSet("rebuild-demo", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
-	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.bin"), "journal log path")
 	diskID := fs.String("disk", "disk-01", "data disk id to rebuild from parity")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -353,8 +361,8 @@ func runRebuildDemo(args []string) error {
 
 func runRebuildAllDemo(args []string) error {
 	fs := flag.NewFlagSet("rebuild-all-demo", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
-	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.bin"), "journal log path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -371,8 +379,8 @@ func runRebuildAllDemo(args []string) error {
 
 func runCheckInvariants(args []string) error {
 	fs := flag.NewFlagSet("check-invariants", flag.ContinueOnError)
-	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.json"), "metadata snapshot path")
-	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.log"), "journal log path")
+	metadataPath := fs.String("metadata-path", filepath.Join(os.TempDir(), "rtparityd-metadata.bin"), "binary metadata snapshot path")
+	journalPath := fs.String("journal-path", filepath.Join(os.TempDir(), "rtparityd-journal.bin"), "journal log path")
 	full := fs.Bool("full", false, "also verify on-disk extent and parity data (requires IO)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -413,8 +421,8 @@ func runCheckInvariants(args []string) error {
 
 func runMount(args []string) error {
 	fset := flag.NewFlagSet("mount", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	poolName := fset.String("pool-name", "demo", "pool name used for new writes")
 	debug := fset.Bool("debug", false, "enable verbose FUSE operation logging")
 	mountpoint := fset.String("mountpoint", "", "directory to mount the pool filesystem at (required)")
@@ -472,8 +480,8 @@ func runMount(args []string) error {
 
 func runTrim(args []string) error {
 	fset := flag.NewFlagSet("trim", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -503,8 +511,8 @@ func runTrim(args []string) error {
 
 func runDefrag(args []string) error {
 	fset := flag.NewFlagSet("defrag", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -534,8 +542,8 @@ func runDefrag(args []string) error {
 
 func runSnapshot(args []string) error {
 	fset := flag.NewFlagSet("snapshot", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	name := fset.String("name", "", "snapshot name (optional, defaults to timestamp)")
 	if err := fset.Parse(args); err != nil {
 		return err
@@ -566,8 +574,8 @@ func runSnapshot(args []string) error {
 
 func runEnableSleep(args []string) error {
 	fset := flag.NewFlagSet("enable-sleep", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	timeoutSec := fset.Int("timeout", 300, "seconds of inactivity before sleep")
 	minActiveSec := fset.Int("min-active", 60, "minimum seconds disk must be active before considering sleep")
 	if err := fset.Parse(args); err != nil {
@@ -594,8 +602,8 @@ func runEnableSleep(args []string) error {
 
 func runDisableSleep(args []string) error {
 	fset := flag.NewFlagSet("disable-sleep", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -620,8 +628,8 @@ func runDisableSleep(args []string) error {
 
 func runWakeDisk(args []string) error {
 	fset := flag.NewFlagSet("wake-disk", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	diskID := fset.String("disk-id", "", "disk ID to wake (required)")
 	if err := fset.Parse(args); err != nil {
 		return err
@@ -655,8 +663,8 @@ func runWakeDisk(args []string) error {
 
 func runSleepDisk(args []string) error {
 	fset := flag.NewFlagSet("sleep-disk", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	diskID := fset.String("disk-id", "", "disk ID to sleep (required)")
 	if err := fset.Parse(args); err != nil {
 		return err
@@ -690,8 +698,8 @@ func runSleepDisk(args []string) error {
 
 func runSleepStatus(args []string) error {
 	fset := flag.NewFlagSet("sleep-status", flag.ContinueOnError)
-	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "binary metadata snapshot path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -722,7 +730,7 @@ func runSleepStatus(args []string) error {
 func runProtectionStatus(args []string) error {
 	fset := flag.NewFlagSet("protection-status", flag.ContinueOnError)
 	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	if err := fset.Parse(args); err != nil {
 		return err
 	}
@@ -768,7 +776,7 @@ func runProtectionStatus(args []string) error {
 func runSetProtection(args []string) error {
 	fset := flag.NewFlagSet("set-protection", flag.ContinueOnError)
 	metadataPath := fset.String("metadata-path", "/tmp/rtparityd/metadata.bin", "metadata snapshot path")
-	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.log", "journal path")
+	journalPath := fset.String("journal-path", "/tmp/rtparityd/journal.bin", "journal path")
 	targetState := fset.String("state", "", "target protection state: integrity_only, mirrored, or parity")
 	if err := fset.Parse(args); err != nil {
 		return err

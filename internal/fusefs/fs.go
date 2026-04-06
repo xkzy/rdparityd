@@ -167,6 +167,15 @@ func (d *dirNode) Create(
 	mode uint32,
 	out *fuse.EntryOut,
 ) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
+	if strings.Contains(name, "\x00") {
+		return nil, nil, 0, syscall.EINVAL
+	}
+	if name == ".." || name == "." || name == "" {
+		return nil, nil, 0, syscall.EINVAL
+	}
+	if strings.ContainsRune(name, '/') {
+		return nil, nil, 0, syscall.EINVAL
+	}
 	logicalPath := d.prefix + "/" + name
 	if d.prefix == "" {
 		logicalPath = "/" + name
@@ -210,6 +219,15 @@ func (d *dirNode) Mkdir(
 	_ uint32,
 	out *fuse.EntryOut,
 ) (*fs.Inode, syscall.Errno) {
+	if strings.Contains(name, "\x00") {
+		return nil, syscall.EINVAL
+	}
+	if name == ".." || name == "." || name == "" {
+		return nil, syscall.EINVAL
+	}
+	if strings.ContainsRune(name, '/') {
+		return nil, syscall.EINVAL
+	}
 	childPrefix := d.prefix + "/" + name
 	if d.prefix == "" {
 		childPrefix = "/" + name
@@ -431,7 +449,7 @@ func (h *fileHandle) Flush(_ context.Context) syscall.Errno {
 	}
 
 	payload := append([]byte(nil), h.data...)
-	_, err := h.coord.WriteFile(journal.WriteRequest{
+	_, err := h.coord.WriteFile(context.Background(), journal.WriteRequest{
 		PoolName:    h.poolName,
 		LogicalPath: h.path,
 		Payload:     payload,

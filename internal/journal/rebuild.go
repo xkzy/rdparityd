@@ -15,6 +15,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -229,6 +230,11 @@ type RebuildAllResult struct {
 // If a progress file from a previous (interrupted) rebuild exists, it resumes
 // from where the last run stopped.
 func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
+	return c.RebuildDataDiskContext(context.Background(), diskID)
+}
+
+// RebuildDataDiskContext reconstructs all extents on diskID from parity with context support.
+func (c *Coordinator) RebuildDataDiskContext(ctx context.Context, diskID string) (RebuildResult, error) {
 	lock, err := c.acquireExclusiveOperationLock()
 	if err != nil {
 		return RebuildResult{}, err
@@ -236,10 +242,10 @@ func (c *Coordinator) RebuildDataDisk(diskID string) (RebuildResult, error) {
 	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.rebuildDataDiskWithRepairFailAfter(diskID, "")
+	return c.rebuildDataDiskContextImpl(ctx, diskID, "")
 }
 
-func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfter State) (RebuildResult, error) {
+func (c *Coordinator) rebuildDataDiskContextImpl(ctx context.Context, diskID string, failAfter State) (RebuildResult, error) {
 	result := RebuildResult{
 		StartedAt: time.Now().UTC(),
 		DiskID:    strings.TrimSpace(diskID),
@@ -259,12 +265,21 @@ func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfte
 	if err != nil {
 		return result, fmt.Errorf("load metadata state: %w", err)
 	}
-	return rebuildDiskFromState(c.metadataPath, c.journal, state, result, failAfter)
+	return rebuildDiskFromStateContext(ctx, c.metadataPath, c.journal, state, result, failAfter)
+}
+
+func (c *Coordinator) rebuildDataDiskWithRepairFailAfter(diskID string, failAfter State) (RebuildResult, error) {
+	return c.rebuildDataDiskContextImpl(context.Background(), diskID, failAfter)
 }
 
 // RebuildAllDataDisks reconstructs extents on all data disks that have any
 // extents registered in metadata.
 func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
+	return c.RebuildAllDataDisksContext(context.Background())
+}
+
+// RebuildAllDataDisksContext reconstructs extents on all data disks with context support.
+func (c *Coordinator) RebuildAllDataDisksContext(ctx context.Context) (RebuildAllResult, error) {
 	lock, err := c.acquireExclusiveOperationLock()
 	if err != nil {
 		return RebuildAllResult{}, err
@@ -299,7 +314,13 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 	}
 	sort.Strings(disks)
 	for _, diskID := range disks {
-		diskResult, err := rebuildDiskFromState(c.metadataPath, c.journal, state, RebuildResult{
+		select {
+		case <-ctx.Done():
+			result.Healthy = false
+			break
+		default:
+		}
+		diskResult, err := rebuildDiskFromStateContext(ctx, c.metadataPath, c.journal, state, RebuildResult{
 			StartedAt: time.Now().UTC(),
 			DiskID:    diskID,
 			Healthy:   true,
@@ -325,7 +346,10 @@ func (c *Coordinator) RebuildAllDataDisks() (RebuildAllResult, error) {
 // ─── Internal ────────────────────────────────────────────────────────────────
 
 func rebuildDiskFromState(metadataPath string, journal *Store, state metadata.SampleState, result RebuildResult, failAfter State) (RebuildResult, error) {
-	// Collect and sort extents for this disk deterministically.
+	return rebuildDiskFromStateContext(context.Background(), metadataPath, journal, state, result, failAfter)
+}
+
+func rebuildDiskFromStateContext(ctx context.Context, metadataPath string, journal *Store, state metadata.SampleState, result RebuildResult, failAfter State) (RebuildResult, error) {
 	extents := make([]metadata.Extent, 0)
 	for _, extent := range state.Extents {
 		if extent.DataDiskID == result.DiskID {
@@ -336,8 +360,6 @@ func rebuildDiskFromState(metadataPath string, journal *Store, state metadata.Sa
 		return result, fmt.Errorf("no extents mapped to disk %s", result.DiskID)
 	}
 
-	// Deterministic ordering: (ParityGroupID, LogicalOffset) ensures the same
-	// processing order on every run and on resume.
 	sort.Slice(extents, func(i, j int) bool {
 		if extents[i].ParityGroupID == extents[j].ParityGroupID {
 			return extents[i].LogicalOffset < extents[j].LogicalOffset
@@ -362,6 +384,17 @@ func rebuildDiskFromState(metadataPath string, journal *Store, state metadata.Sa
 
 	result.ExtentsScanned = len(extents)
 	for _, extent := range extents {
+		select {
+		case <-ctx.Done():
+			result.Issues = append(result.Issues, RebuildIssue{
+				ExtentID: extent.ExtentID,
+				Status:   "cancelled",
+				Detail:   ctx.Err().Error(),
+			})
+			result.Healthy = false
+			break
+		default:
+		}
 		if completed[extent.ExtentID] {
 			result.ExtentsSkipped++
 			continue

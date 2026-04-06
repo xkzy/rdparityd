@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestReadMetaForcesRecoveryWhenJournalReplayIsPending(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "meta-view-recovery",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,
@@ -52,7 +53,7 @@ func TestPoolNameForcesRecoveryWhenJournalReplayIsPending(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "poolname-recovery",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,

@@ -1,0 +1,102 @@
+#!/bin/bash
+#
+# rtparityctl - CLI client for rtparityd daemon via Unix socket
+#
+# Usage:
+#   rtparityctl health
+#   rtparityctl metrics
+#   rtparityctl status
+#   rtparityctl write <path> <data>
+#   rtparityctl read <path>
+#   rtparityctl scrub [--repair]
+#   rtparityctl rebuild <disk-id>
+#   rtparityctl rebuild-all
+#
+
+SOCKET="${RTPARITYD_SOCKET:-/var/run/rtparityd/rtparityd.sock}"
+TIMEOUT=5
+
+send_cmd() {
+    local id="$1"
+    local op="$2"
+    local params="$3"
+    
+    local json="{\"id\":\"$id\",\"op\":\"$op\""
+    if [ -n "$params" ]; then
+        json="$json,\"params\":{$params}"
+    fi
+    json="$json}"
+    
+    echo "$json" | timeout "$TIMEOUT" nc -U -w "$TIMEOUT" "$SOCKET" 2>/dev/null
+}
+
+main() {
+    if [ $# -lt 1 ]; then
+        echo "Usage: $0 {health|metrics|status|write|read|scrub|rebuild|rebuild-all}"
+        exit 1
+    fi
+    
+    if [ ! -S "$SOCKET" ]; then
+        echo "Error: Socket not found at $SOCKET"
+        echo "Is rtparityd running?"
+        exit 1
+    fi
+    
+    cmd="$1"
+    shift
+    
+    case "$cmd" in
+        health)
+            send_cmd "1" "health" ""
+            ;;
+        metrics)
+            send_cmd "1" "metrics" ""
+            ;;
+        status)
+            send_cmd "1" "status" ""
+            ;;
+        write)
+            if [ $# -lt 2 ]; then
+                echo "Usage: $0 write <path> <data>"
+                exit 1
+            fi
+            path="$1"
+            data="$2"
+            # Base64 encode payload
+            payload=$(echo -n "$data" | base64 -w0)
+            send_cmd "1" "write" "\"path\":\"$path\",\"payload\":\"$payload\",\"synthetic\":false"
+            ;;
+        read)
+            if [ $# -lt 1 ]; then
+                echo "Usage: $0 read <path>"
+                exit 1
+            fi
+            path="$1"
+            send_cmd "1" "read" "\"path\":\"$path\""
+            ;;
+        scrub)
+            repair="false"
+            if [ "$1" = "--repair" ]; then
+                repair="true"
+            fi
+            send_cmd "1" "scrub" "\"repair\":$repair"
+            ;;
+        rebuild)
+            if [ $# -lt 1 ]; then
+                echo "Usage: $0 rebuild <disk-id>"
+                exit 1
+            fi
+            disk="$1"
+            send_cmd "1" "rebuild" "\"disk\":\"$disk\""
+            ;;
+        rebuild-all)
+            send_cmd "1" "rebuild-all" ""
+            ;;
+        *)
+            echo "Unknown command: $cmd"
+            exit 1
+            ;;
+    esac | python3 -m json.tool 2>/dev/null || cat
+}
+
+main "$@"

@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -9,7 +10,7 @@ func TestRenameFileSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/a/file.txt",
 		AllowSynthetic: true,
@@ -52,7 +53,7 @@ func TestRenameFileSamePathIsNoOp(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/same.txt",
 		AllowSynthetic: true,
@@ -75,7 +76,7 @@ func TestRenameFileNotFound(t *testing.T) {
 	dir := t.TempDir()
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/exists.txt",
 		AllowSynthetic: true,
@@ -96,7 +97,7 @@ func TestRenameFileDestinationExists(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	for _, path := range []string{"/src.txt", "/dst.txt"} {
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
 			t.Fatalf("WriteFile(%q) returned error: %v", path, err)
 		}
 	}
@@ -124,7 +125,7 @@ func TestOverwriteFileBasic(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	path := "/test/file.bin"
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: 512}); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -159,7 +160,7 @@ func TestTruncateFileBasic(t *testing.T) {
 	path := "/test/file.bin"
 	// Use 2 full extents (default 1MB each) then truncate to 1 extent
 	originalSize := 2 * 1024 * 1024
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: int64(originalSize)}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, AllowSynthetic: true, SizeBytes: int64(originalSize)}); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -187,7 +188,7 @@ func TestGrowFileBasic(t *testing.T) {
 
 	path := "/test/file.bin"
 	original := []byte("original content")
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: original}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: original}); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -215,7 +216,7 @@ func TestDeleteFileBasic(t *testing.T) {
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
 	path := "/test/delete_me.bin"
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    path,
 		AllowSynthetic: true,

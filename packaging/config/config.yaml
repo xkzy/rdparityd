@@ -1,0 +1,32 @@
+# rtparityd configuration
+# Default configuration for rtparityd storage engine
+
+# Pool settings
+pool:
+  name: demo
+  metadata_path: /var/lib/rtparityd/metadata.bin
+  journal_path: /var/lib/rtparityd/journal.bin
+
+# Network settings
+network:
+  socket_path: /var/run/rtparityd/rtparityd.sock
+  socket_permissions: "0660"
+
+# Runtime settings
+runtime:
+  data_directory: /var/lib/rtparityd
+  run_directory: /var/run/rtparityd
+  log_level: info
+
+# Storage settings
+storage:
+  default_extent_size: 1048576  # 1 MiB
+  default_parity_groups: 8
+  compression_default: ""  # empty = no compression
+
+# Maintenance settings
+maintenance:
+  scrub_enabled: false
+  scrub_interval_hours: 168  # weekly
+  scrub_repair: true
+  rebuild_on_startup: false

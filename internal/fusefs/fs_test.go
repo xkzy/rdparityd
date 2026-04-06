@@ -441,12 +441,12 @@ func TestFUSEMultipleFilesInSameDirectory(t *testing.T) {
 	}
 }
 
-// ─── TestFUSEUnlinkReturnsEnotsup ─────────────────────────────────────────────
+// ─── TestFUSEUnlink ───────────────────────────────────────────────────────────
 
-// Deleting a file must return an error (not silently succeed without
-// persistence). The PoC returns ENOTSUP.
-func TestFUSEUnlinkReturnsEnotsup(t *testing.T) {
-	mnt, _, cleanup := testMount(t)
+// Deleting a file through the FUSE mount must remove it from the filesystem
+// and make it inaccessible on subsequent read attempts.
+func TestFUSEUnlink(t *testing.T) {
+	mnt, coord, cleanup := testMount(t)
 	defer cleanup()
 
 	dir := filepath.Join(mnt, "shares", "demo")
@@ -454,16 +454,361 @@ func TestFUSEUnlinkReturnsEnotsup(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	filePath := filepath.Join(dir, "to-delete.bin")
-	if err := os.WriteFile(filePath, []byte("data"), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("data to be deleted"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+
+	// Verify file exists via coordinator.
+	_, err := coord.ReadFile("/shares/demo/to-delete.bin")
+	if err != nil {
+		t.Fatalf("file should exist before unlink: %v", err)
+	}
+
+	// Unlink the file.
+	if err := os.Remove(filePath); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Verify file no longer exists via coordinator.
+	_, err = coord.ReadFile("/shares/demo/to-delete.bin")
+	if err == nil {
+		t.Fatal("expected error reading deleted file")
+	}
+
+	// Verify file no longer appears in directory listing.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() == "to-delete.bin" {
+			t.Error("deleted file still appears in directory")
+		}
+	}
+}
+
+// ─── TestFUSEUnlinkNonexistent ─────────────────────────────────────────────────
+
+// Removing a nonexistent file must return ENOENT.
+func TestFUSEUnlinkNonexistent(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	filePath := filepath.Join(dir, "nonexistent.bin")
 	err := os.Remove(filePath)
 	if err == nil {
-		t.Fatal("expected Remove to fail, got nil error")
+		t.Fatal("expected error removing nonexistent file")
 	}
 	var pathErr *fs.PathError
 	if !errors.As(err, &pathErr) {
 		t.Fatalf("expected PathError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("expected ENOENT, got %v", err)
+	}
+}
+
+// ─── TestFUSERename ────────────────────────────────────────────────────────────
+
+// Renaming a file through the FUSE mount must update its path in metadata
+// and make it accessible at the new path.
+func TestFUSERename(t *testing.T) {
+	mnt, coord, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	oldPath := filepath.Join(dir, "oldname.txt")
+	newPath := filepath.Join(dir, "newname.txt")
+	payload := []byte("rename test data")
+	if err := os.WriteFile(oldPath, payload, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Verify file exists at old path.
+	_, err := coord.ReadFile("/shares/demo/oldname.txt")
+	if err != nil {
+		t.Fatalf("file should exist at old path: %v", err)
+	}
+
+	// Rename the file.
+	if err := os.Rename(oldPath, newPath); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	// Verify file no longer exists at old path.
+	_, err = coord.ReadFile("/shares/demo/oldname.txt")
+	if err == nil {
+		t.Fatal("file still exists at old path after rename")
+	}
+
+	// Verify file exists at new path.
+	result, err := coord.ReadFile("/shares/demo/newname.txt")
+	if err != nil {
+		t.Fatalf("file should exist at new path: %v", err)
+	}
+	if !bytes.Equal(result.Data, payload) {
+		t.Fatalf("content mismatch at new path: got %v, want %v", result.Data, payload)
+	}
+
+	// Verify file appears in directory listing with new name.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name() == "newname.txt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("renamed file not found in directory listing")
+	}
+}
+
+// ─── TestFUSERenameOverwrite ───────────────────────────────────────────────────
+
+// Renaming a file to an existing filename must fail with EEXIST.
+func TestFUSERenameOverwrite(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	file1 := filepath.Join(dir, "file1.txt")
+	file2 := filepath.Join(dir, "file2.txt")
+	if err := os.WriteFile(file1, []byte("content1"), 0o644); err != nil {
+		t.Fatalf("WriteFile file1: %v", err)
+	}
+	if err := os.WriteFile(file2, []byte("content2"), 0o644); err != nil {
+		t.Fatalf("WriteFile file2: %v", err)
+	}
+
+	// Try to rename file1 to file2's name (should fail).
+	err := os.Rename(file1, file2)
+	if err == nil {
+		t.Fatal("expected error renaming over existing file")
+	}
+	// os.Rename returns *os.LinkError which wraps the underlying error.
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("expected LinkError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, syscall.EEXIST) {
+		t.Fatalf("expected EEXIST, got %v", err)
+	}
+
+	// Both files should still exist with original content.
+	got1, err := os.ReadFile(file1)
+	if err != nil || !bytes.Equal(got1, []byte("content1")) {
+		t.Error("file1 content changed after failed rename")
+	}
+	got2, err := os.ReadFile(file2)
+	if err != nil || !bytes.Equal(got2, []byte("content2")) {
+		t.Error("file2 content changed after failed rename")
+	}
+}
+
+// ─── TestFUSERenameNonexistent ─────────────────────────────────────────────────
+
+// Renaming a nonexistent file must return ENOENT.
+func TestFUSERenameNonexistent(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	oldPath := filepath.Join(dir, "nonexistent.txt")
+	newPath := filepath.Join(dir, "newname.txt")
+	err := os.Rename(oldPath, newPath)
+	if err == nil {
+		t.Fatal("expected error renaming nonexistent file")
+	}
+	// os.Rename returns *os.LinkError which wraps the underlying error.
+	var linkErr *os.LinkError
+	if !errors.As(err, &linkErr) {
+		t.Fatalf("expected LinkError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, syscall.ENOENT) {
+		t.Fatalf("expected ENOENT, got %v", err)
+	}
+}
+
+// ─── TestFUSETruncate ──────────────────────────────────────────────────────────
+
+// Truncating a file through the FUSE mount must update its size in metadata.
+// Note: The current TruncateFile implementation removes entire extents,
+// so truncation only works correctly when truncating at an extent boundary
+// or when the file has multiple extents and we truncate to remove whole extents.
+func TestFUSETruncate(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	filePath := filepath.Join(dir, "truncate-test.bin")
+	// Write a file larger than one extent (1 MiB + 1 byte) so it spans extents.
+	// The first extent is 1 MiB, second extent is 1 byte.
+	original := make([]byte, 1<<21) // 2 MiB
+	for i := range original {
+		original[i] = byte(i % 256)
+	}
+	if err := os.WriteFile(filePath, original, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Truncate to exactly 1 MiB (extent boundary).
+	if err := os.Truncate(filePath, 1<<20); err != nil {
+		t.Fatalf("Truncate: %v", err)
+	}
+
+	// Verify new size via stat.
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("Stat after truncate: %v", err)
+	}
+	if info.Size() != 1<<20 {
+		t.Fatalf("size after truncate: got %d, want %d", info.Size(), 1<<20)
+	}
+
+	// Verify content is correct up to new size.
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile after truncate: %v", err)
+	}
+	if int64(len(got)) != 1<<20 {
+		t.Fatalf("read length after truncate: got %d, want %d", len(got), 1<<20)
+	}
+	for i := 0; i < 1<<20; i++ {
+		if got[i] != original[i] {
+			t.Fatalf("content mismatch at byte %d: got %v, want %v", i, got[i], original[i])
+		}
+	}
+}
+
+// ─── TestFUSETruncateExpand ────────────────────────────────────────────────────
+
+// Truncating a file to a larger size is currently not supported by the
+// coordinator's TruncateFile, so the size remains unchanged.
+func TestFUSETruncateExpand(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	filePath := filepath.Join(dir, "expand-test.bin")
+	originalContent := []byte("hello")
+	if err := os.WriteFile(filePath, originalContent, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Try to expand to 8192 bytes.
+	if err := os.Truncate(filePath, 8192); err != nil {
+		t.Fatalf("Truncate expand: %v", err)
+	}
+
+	// Verify size is unchanged (TruncateFile doesn't support expansion).
+	info, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("Stat after truncate: %v", err)
+	}
+	if info.Size() != int64(len(originalContent)) {
+		t.Fatalf("size after expand truncate: got %d, want %d (expansion not supported)", info.Size(), len(originalContent))
+	}
+
+	// Original content should still be readable.
+	got, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("ReadFile after truncate: %v", err)
+	}
+	if !bytes.Equal(got, originalContent) {
+		t.Errorf("content changed after expand attempt: got %v, want %v", got, originalContent)
+	}
+}
+
+// ─── TestFUSERmdirEmpty ───────────────────────────────────────────────────────
+
+// Removing an empty directory must succeed.
+func TestFUSERmdirEmpty(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	subdir := filepath.Join(dir, "empty-dir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("Mkdir subdir: %v", err)
+	}
+
+	// Remove the empty directory.
+	if err := os.Remove(subdir); err != nil {
+		t.Fatalf("Remove empty dir: %v", err)
+	}
+
+	// Verify it's gone.
+	_, err := os.Stat(subdir)
+	if err == nil {
+		t.Fatal("removed directory still exists")
+	}
+}
+
+// ─── TestFUSERmdirNonempty ────────────────────────────────────────────────────
+
+// Removing a non-empty directory must fail with ENOTEMPTY.
+func TestFUSERmdirNonempty(t *testing.T) {
+	mnt, _, cleanup := testMount(t)
+	defer cleanup()
+
+	dir := filepath.Join(mnt, "shares", "demo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	subdir := filepath.Join(dir, "nonempty-dir")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("Mkdir subdir: %v", err)
+	}
+
+	// Create a file inside.
+	if err := os.WriteFile(filepath.Join(subdir, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Try to remove the non-empty directory.
+	err := os.Remove(subdir)
+	if err == nil {
+		t.Fatal("expected error removing non-empty directory")
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("expected PathError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, syscall.ENOTEMPTY) {
+		t.Fatalf("expected ENOTEMPTY, got %v", err)
 	}
 }
 

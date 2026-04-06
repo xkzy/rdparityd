@@ -1,0 +1,423 @@
+.TH RTPARITYD 1 "2025" "rtparityd 0.1" "rtparityd daemon"
+.SH NAME
+rtparityd \- RAID-like parity daemon for data integrity and durability
+.SH SYNOPSIS
+.B rtparityd
+[\fB\-\-config\fR \fIPATH\fR]
+[\fB\-\-socket\fR \fIPATH\fR]
+[\fB\-\-admin\-socket\fR \fIPATH\fR]
+[\fB\-\-pid\-file\fR \fIPATH\fR]
+[\fB\-\-pool\-name\fR \fINAME\fR]
+[\fB\-\-journal\-path\fR \fIPATH\fR]
+[\fB\-\-metadata\-path\fR \fIPATH\fR]
+[\fB\-\-require\-root\fR]
+[\fB\-\-version\fR]
+.SH DESCRIPTION
+.B rtparityd
+is a production-grade storage daemon that provides data protection through
+parity-based redundancy. It manages extents across multiple disks,
+automatically rebuilds missing data from parity, and ensures durability
+through journaled writes and metadata snapshots.
+.PP
+The daemon exposes a Unix socket control interface for client operations
+and an admin socket for administrative tasks. All operations are logged
+and audited.
+.SH OPTIONS
+.TP
+.BR \-\-config " " \fIPATH\fR
+Path to TOML configuration file. Optional.
+.TP
+.BR \-\-socket " " \fIPATH\fR
+Unix socket path for client control interface (default: /var/run/rtparityd/rtparityd.sock)
+.TP
+.BR \-\-admin\-socket " " \fIPATH\fR
+Unix socket path for admin interface (default: none)
+.TP
+.BR \-\-pid\-file " " \fIPATH\fR
+PID file path (default: /var/run/rtparityd/rtparityd.pid)
+.TP
+.BR \-\-pool\-name " " \fINAME\fR
+Pool name (default: demo)
+.TP
+.BR \-\-journal\-path " " \fIPATH\fR
+Journal file path (default: /var/lib/rtparityd/journal.bin)
+.TP
+.BR \-\-metadata\-path " " \fIPATH\fR
+Metadata file path (default: /var/lib/rtparityd/metadata.bin)
+.TP
+.BR \-\-require\-root
+Require root user for socket connections (default: true)
+.TP
+.BR \-\-version
+Show version and exit
+.SH OPERATIONS
+Client operations are sent as JSON over the control socket:
+.PP
+.BR write
+\- Write data to the pool
+.RS
+.PP
+\fBParams:\fR path, size, payload (optional), synthetic (bool)
+.RE
+.PP
+.BR read
+\- Read data from the pool
+.RS
+.PP
+\fBParams:\fR path
+.RE
+.PP
+.BR bulk\-write
+\- Write multiple files in batch
+.RS
+.PP
+\fBParams:\fR paths[], size, payload, synthetic
+.RE
+.PP
+.BR bulk\-read
+\- Read multiple files in batch
+.RS
+.PP
+\fBParams:\fR paths[]
+.RE
+.PP
+.BR health
+\- Overall health status with component details
+.PP
+.BR liveness
+\- Simple alive/dead check
+.PP
+.BR readiness
+\- Detailed readiness probe
+.PP
+.BR metrics
+\- Internal metrics snapshot (JSON)
+.PP
+.BR prometheus
+\- Metrics in Prometheus format
+.PP
+.BR disk\-stats
+\- Per-disk statistics
+.PP
+.BR pool\-stats
+\- Pool capacity and extent information
+.PP
+.BR memory\-pool\-stats
+\- Go runtime memory statistics
+.PP
+.BR locks
+\- Lock file information
+.PP
+.BR config\-get
+\- Current runtime configuration
+.PP
+.BR state\-dump
+\- Full daemon state for debugging
+.PP
+.BR scrub
+\- Verify and repair data integrity
+.RS
+.PP
+\fBParams:\fR repair (bool, default false)
+.RE
+.PP
+.BR rebuild
+\- Rebuild single disk from parity
+.RS
+.PP
+\fBParams:\fR disk_id
+.RE
+.PP
+.BR rebuild\-all
+\- Rebuild all disks
+.PP
+.BR backup
+\- Create backup of metadata and journal
+.RS
+.PP
+\fBParams:\fR output_path
+.RE
+.PP
+.BR restore
+\- Restore from backup
+.RS
+.PP
+\fBParams:\fR input_path
+.RE
+.PP
+.BR reload\-config
+\- Hot reload configuration
+.RS
+.PP
+\fBParams:\fR config_path
+.RE
+.PP
+.BR check\-consistency
+\- Run integrity invariants check
+.PP
+.BR repair\-metadata
+\- Attempt metadata repair
+.PP
+.BR compact\-journal
+\- Compact journal to reduce size
+.PP
+.BR recover\-status
+\- Recovery operation status
+.PP
+.BR host\-info
+\- Host system information
+.PP
+.BR system\-stats
+\- System resource statistics
+.PP
+.BR validate\-config
+\- Validate configuration file
+.RS
+.PP
+\fBParams:\fR config_path
+.RE
+.PP
+.BR operations
+\- List all available operations
+.PP
+.BR batch
+\- Execute multiple operations in one request
+.RS
+.PP
+\fBParams:\fR commands[]
+.RE
+.PP
+.BR version
+\- Daemon version information
+.PP
+.BR ping
+\- Simple ping/pong
+.SH ADMIN OPERATIONS
+Admin operations require root access via the admin socket:
+.PP
+.BR shutdown
+\- Gracefully shutdown daemon
+.PP
+.BR drain
+\- Enter drain mode (reject new writes)
+.PP
+.BR status
+\- Admin status information
+.PP
+.BR force\-gc
+\- Force Go garbage collection
+.SH CONFIGURATION
+Configuration is via TOML file:
+.PP
+.BR [global]
+.RS
+.TP
+pool\-name
+Pool identifier
+.TP
+journal\-path
+Journal file location
+.TP
+metadata\-path
+Metadata file location
+.TP
+snapshot\-interval\-hours
+Periodic metadata snapshot interval (0 to disable)
+.RE
+.PP
+.BR [server]
+.RS
+.TP
+socket\-path
+Client socket path
+.TP
+admin\-socket\-path
+Admin socket path
+.TP
+require\-root\-user
+Require root for connections (bool)
+.TP
+read\-timeout\-seconds
+Connection read timeout
+.TP
+idle\-timeout\-seconds
+Connection idle timeout
+.TP
+max\-timeout\-ms
+Max per-request timeout
+.RE
+.PP
+.BR [limits]
+.RS
+.TP
+max\-request\-size\-bytes
+Max request size
+.TP
+max\-write\-size\-bytes
+Max write size
+.TP
+write\-rate\-limit\-per\-second
+Write rate limit
+.TP
+write\-burst
+Write burst size
+.TP
+read\-rate\-limit\-per\-second
+Read rate limit
+.TP
+read\-burst
+Read burst size
+.TP
+max\-goroutines
+Max concurrent goroutines
+.TP
+slow\-query\-threshold\-ms
+Slow query warning threshold
+.RE
+.PP
+.BR [logging]
+.RS
+.TP
+level
+Log level (debug, info, warn, error)
+.TP
+json
+JSON logging format (bool)
+.RE
+.PP
+.BR [audit]
+.RS
+.TP
+enabled
+Enable audit logging (bool)
+.TP
+path
+Audit log file path
+.RE
+.PP
+.BR [alert]
+.RS
+.TP
+enabled
+Enable alert webhooks (bool)
+.TP
+url
+Webhook URL
+.RE
+.PP
+.BR [scrub]
+.RS
+.TP
+enabled
+Enable automatic scrub (bool)
+.TP
+interval\-hours
+Scrub interval
+.TP
+start\-hour
+Scrub window start
+.TP
+end\-hour
+Scrub window end
+.RE
+.SH FILES
+.TP
+.I /etc/rtparityd/rtparityd.conf
+Default configuration file
+.TP
+.I /var/run/rtparityd/rtparityd.sock
+Control socket
+.TP
+.I /var/run/rtparityd/rtparityd-admin.sock
+Admin socket
+.TP
+.I /var/run/rtparityd/rtparityd.pid
+PID file
+.TP
+.I /var/lib/rtparityd/journal.bin
+Journal file
+.TP
+.I /var/lib/rtparityd/metadata.bin
+Metadata snapshot
+.TP
+.I /var/log/rtparityd/audit.log
+Audit log
+.SH EXAMPLES
+.PP
+Start daemon with default settings:
+.PP
+.nf
+.B rtparityd
+.fi
+.PP
+Start with custom configuration:
+.PP
+.nf
+.B rtparityd --config /etc/rtparityd/rtparityd.conf
+.fi
+.PP
+Check health:
+.PP
+.nf
+.B echo '{"id":"1","op":"health"}' | socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+.fi
+.PP
+Write data:
+.PP
+.nf
+.B echo '{"id":"1","op":"write","params":{"path":"/file","size":1024}}' | \\
+    socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd.sock
+.fi
+.PP
+Graceful shutdown:
+.PP
+.nf
+.B echo '{"id":"1","op":"shutdown"}' | \\
+    socat - UNIX-CONNECT:/var/run/rtparityd/rtparityd-admin.sock
+.fi
+.SH DIAGNOSTICS
+Use the
+.B health
+operation to check component status. The response includes:
+.IP \(bu 2
+journal: records count, replay requirement
+.IP \(bu 2
+metadata: files, extents, disks counts
+.IP \(bu 2
+disk: failed/degraded disk counts
+.IP \(bu 2
+memory: runtime memory stats
+.PP
+Enable debug logging by setting level to "debug" in config.
+.SH ERROR CODES
+.TP
+1001
+Invalid parameters
+.TP
+1002
+Not found
+.TP
+1003
+Internal error
+.TP
+1004
+Rate limited (try again later)
+.TP
+1005
+Timeout
+.TP
+1006
+Not implemented
+.TP
+1007
+Permission denied
+.TP
+1008
+Invalid state
+.SH SEE ALSO
+.BR rtpctl (1),
+.BR rtparityd.conf (5)
+.SH AUTHORS
+rtparityd contributors
+.SH BUGS
+Report bugs at https://github.com/xkzy/rdparityd/issues

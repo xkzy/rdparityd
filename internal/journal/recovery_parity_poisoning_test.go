@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,7 +18,7 @@ func TestRecoveryDoesNotPoisonParityFromCorruptedCommittedExtent(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	resA, err := coord.WriteFile(WriteRequest{
+	resA, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "recovery-poison-guard",
 		LogicalPath:    "/test/a.bin",
 		AllowSynthetic: true,
@@ -41,7 +42,7 @@ func TestRecoveryDoesNotPoisonParityFromCorruptedCommittedExtent(t *testing.T) {
 		t.Fatalf("corrupt A extent: %v", err)
 	}
 
-	resB, err := coord.WriteFile(WriteRequest{
+	resB, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "recovery-poison-guard",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,

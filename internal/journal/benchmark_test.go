@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -16,7 +17,7 @@ func BenchmarkWriteFile(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		path := "/test/bench_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			b.Fatalf("WriteFile failed: %v", err)
 		}
 	}
@@ -30,7 +31,7 @@ func BenchmarkWriteFileSmall(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		path := "/test/small_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			b.Fatalf("WriteFile failed: %v", err)
 		}
 	}
@@ -45,7 +46,7 @@ func BenchmarkReadFile(b *testing.B) {
 	}
 
 	path := "/test/readbench.bin"
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 		b.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -64,7 +65,7 @@ func BenchmarkRecovery(b *testing.B) {
 
 	for i := 0; i < 100; i++ {
 		path := "/test/recovery_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			b.Fatalf("WriteFile failed: %v", err)
 		}
 	}
@@ -85,7 +86,7 @@ func BenchmarkScrub(b *testing.B) {
 
 	for i := 0; i < 50; i++ {
 		path := "/test/scrub_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			b.Fatalf("WriteFile failed: %v", err)
 		}
 	}
@@ -149,7 +150,7 @@ func BenchmarkMetadataLoad(b *testing.B) {
 
 	for i := 0; i < 100; i++ {
 		path := "/test/meta_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			b.Fatalf("WriteFile failed: %v", err)
 		}
 	}

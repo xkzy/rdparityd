@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestValidateOnDiskFormatsHealthyPool(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("validate-formats-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/test.bin",
 		AllowSynthetic: true,
@@ -49,7 +50,7 @@ func TestValidateOnDiskFormatsTamperedMetadata(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.bin")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/test.bin",
 		AllowSynthetic: true,
@@ -83,7 +84,7 @@ func TestValidateOnDiskFormatsMissingExtentFile(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("extent-data-"), 65536)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/test.bin",
 		AllowSynthetic: true,
@@ -113,7 +114,7 @@ func TestValidateOnDiskFormatsMissingJournal(t *testing.T) {
 	journalPath := filepath.Join(dir, "no-journal.bin")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/test.bin",
 		AllowSynthetic: true,
@@ -140,7 +141,7 @@ func TestValidateOnDiskFormatsCorruptedExtentChecksum(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("extent-checksum-corruption-"), 1024)
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/corrupt.bin",
 		AllowSynthetic: true,
@@ -178,7 +179,7 @@ func TestValidateRebuildProgressFileValidFormat(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("rebuild-progress-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/rebuild/test.bin",
 		AllowSynthetic: true,
@@ -216,7 +217,7 @@ func TestValidateOnDiskFormatsParityChecksum(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := bytes.Repeat([]byte("parity-checksum-test-"), 65536)
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/data/parity.bin",
 		AllowSynthetic: true,
@@ -313,7 +314,7 @@ func TestValidateRebuildProgressFileInViaValidateOnDisk(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.bin")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	if _, err := coord.WriteFile(WriteRequest{
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/f.bin",
 		AllowSynthetic: true,

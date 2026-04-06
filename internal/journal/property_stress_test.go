@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ func TestProperty_JournalReplayIdempotent(t *testing.T) {
 			payload[j] = byte((i + j) % 256)
 		}
 
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
@@ -47,7 +48,7 @@ func TestProperty_MultipleWritesConsistency(t *testing.T) {
 	}
 
 	for i, path := range paths {
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payloads[i]}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payloads[i]}); err != nil {
 			t.Fatalf("WriteFile %s failed: %v", path, err)
 		}
 	}
@@ -70,7 +71,7 @@ func TestProperty_ChecksumNeverFalsePositive(t *testing.T) {
 	path := "/test/checksum.bin"
 	payload := []byte("specific checksum test data 12345")
 
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
@@ -95,7 +96,7 @@ func TestProperty_ParityRecoveryDeterministic(t *testing.T) {
 	path := "/test/parity.bin"
 	payload := []byte("test data for parity recovery")
 
-	result1, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+	result1, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestProperty_ParityRecoveryDeterministic(t *testing.T) {
 		}
 
 		newPath := "/test/parity_" + string(rune('a'+idx)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: newPath, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: newPath, Payload: payload}); err != nil {
 			t.Fatalf("Rewrite failed: %v", err)
 		}
 	}
@@ -141,12 +142,12 @@ func TestProperty_ExtentAllocationDeterministic(t *testing.T) {
 	path := "/test/allocate.bin"
 	payload := []byte("allocate test")
 
-	result1, err := coord1.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+	result1, err := coord1.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 	if err != nil {
 		t.Fatalf("WriteFile 1 failed: %v", err)
 	}
 
-	result2, err := coord2.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+	result2, err := coord2.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 	if err != nil {
 		t.Fatalf("WriteFile 2 failed: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestProperty_RecoveryPreservesTransactionOrder(t *testing.T) {
 
 	for i := 0; i < 5; i++ {
 		path := "/test/file" + string(rune('0'+i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("data")}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("data")}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}
@@ -199,7 +200,7 @@ func TestProperty_ScrubDetectsPreviousCorruption(t *testing.T) {
 	path := "/test/scrub.bin"
 	payload := []byte("scrub test data for integrity")
 
-	writeResult, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -226,7 +227,7 @@ func TestProperty_RebuildAfterDiskFailure(t *testing.T) {
 	path := "/test/rebuild.bin"
 	payload := []byte("rebuild test data that must be recoverable")
 
-	_, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+	_, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 	if err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -269,12 +270,12 @@ func TestProperty_ConcurrentWritesSerializability(t *testing.T) {
 
 	coord := NewCoordinator(filepath.Join(dir, "metadata.bin"), filepath.Join(dir, "journal.bin"))
 
-	_, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/test/concurrent1.bin", Payload: []byte("data1")})
+	_, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/test/concurrent1.bin", Payload: []byte("data1")})
 	if err != nil {
 		t.Fatalf("WriteFile 1 failed: %v", err)
 	}
 
-	_, err = coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: "/test/concurrent2.bin", Payload: []byte("data2")})
+	_, err = coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: "/test/concurrent2.bin", Payload: []byte("data2")})
 	if err != nil {
 		t.Fatalf("WriteFile 2 failed: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestProperty_MetadataGenerationMonotonic(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		path := "/test/gen" + string(rune('a'+i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("data")}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("data")}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}
@@ -321,7 +322,7 @@ func TestStress_ManySmallWrites(t *testing.T) {
 		path := "/test/stress_" + string(rune(i)) + ".bin"
 		payload := []byte("test data " + string(rune(i)))
 
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}
@@ -346,7 +347,7 @@ func TestStress_RecoveryAfterManyWrites(t *testing.T) {
 
 	for i := 0; i < 50; i++ {
 		path := "/test/recovery_" + string(rune(i)) + ".bin"
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("recovery test data")}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("recovery test data")}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}
@@ -381,7 +382,7 @@ func TestStress_SoakWriteAndRecover(t *testing.T) {
 		for i := 0; i < fileCount; i++ {
 			path := fmt.Sprintf("/test/soak_r%d_%d.bin", round, i)
 			payload := []byte(fmt.Sprintf("round=%d iteration=%d data", round, i))
-			if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+			if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 				t.Fatalf("Round %d, WriteFile %d failed: %v", round, i, err)
 			}
 		}
@@ -416,7 +417,7 @@ func TestStress_ContinuousReadWrite(t *testing.T) {
 	path := "/test/continuous.bin"
 	originalPayload := []byte("continuous test data")
 
-	if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: originalPayload}); err != nil {
+	if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: originalPayload}); err != nil {
 		t.Fatalf("Initial WriteFile failed: %v", err)
 	}
 

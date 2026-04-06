@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ type ScrubResult struct {
 const maxScrubHistory = 32
 
 func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
+	return c.ScrubContext(context.Background(), repair)
+}
+
+func (c *Coordinator) ScrubContext(ctx context.Context, repair bool) (ScrubResult, error) {
 	lock, err := c.acquireExclusiveOperationLock()
 	if err != nil {
 		return ScrubResult{}, err
@@ -48,10 +53,18 @@ func (c *Coordinator) Scrub(repair bool) (ScrubResult, error) {
 	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.scrubWithRepairFailAfter(repair, "")
+	return c.scrubWithRepairFailAfterContext(ctx, repair, "")
+}
+
+func (c *Coordinator) scrubWithRepairFailAfterContext(ctx context.Context, repair bool, failAfter State) (ScrubResult, error) {
+	return c.scrubWithRepairFailAfterImpl(ctx, repair, failAfter)
 }
 
 func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (ScrubResult, error) {
+	return c.scrubWithRepairFailAfterImpl(context.Background(), repair, failAfter)
+}
+
+func (c *Coordinator) scrubWithRepairFailAfterImpl(ctx context.Context, repair bool, failAfter State) (ScrubResult, error) {
 	if c == nil {
 		return ScrubResult{}, fmt.Errorf("coordinator is nil")
 	}
@@ -111,6 +124,17 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 	})
 
 	for _, extent := range extents {
+		select {
+		case <-ctx.Done():
+			result.Issues = append(result.Issues, ScrubIssue{
+				Kind:   "scrub",
+				Status: "cancelled",
+				Detail: ctx.Err().Error(),
+			})
+			result.Healthy = false
+			break
+		default:
+		}
 		if completedExtents[extent.ExtentID] {
 			result.ExtentsSkipped++
 			continue
@@ -163,6 +187,17 @@ func (c *Coordinator) scrubWithRepairFailAfter(repair bool, failAfter State) (Sc
 
 	groupsToRepair := make(map[string]struct{})
 	for _, group := range groups {
+		select {
+		case <-ctx.Done():
+			result.Issues = append(result.Issues, ScrubIssue{
+				Kind:   "scrub",
+				Status: "cancelled",
+				Detail: ctx.Err().Error(),
+			})
+			result.Healthy = false
+			break
+		default:
+		}
 		if completedGroups[group.ParityGroupID] {
 			result.ParityGroupsSkipped++
 			continue

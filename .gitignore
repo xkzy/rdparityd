@@ -1,8 +1,39 @@
+# Binaries
 bin/
 dist/
+*.exe
+*.dll
+*.so
+*.dylib
+rtparityd
+rtpctl
+
+# Test outputs
 *.out
 *.test
-.pi/
-.context/
-.claude
+*.prof
+
+# Build artifacts
+vendor/
+*.swp
+*.swo
+*~
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Claude / AI
 .claude/
+.context/
+.pi/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data directories (runtime - don't commit pool data)
+/var/lib/rtparityd/
+/var/run/rtparityd/
+/tmp/rtparityd/

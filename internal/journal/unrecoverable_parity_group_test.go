@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestWriteRefusesWhenParityGroupMemberIsUnrecoverable(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	resA, err := coord.WriteFile(WriteRequest{
+	resA, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "unrecoverable-test",
 		LogicalPath:    "/test/a.bin",
 		AllowSynthetic: true,
@@ -40,7 +41,7 @@ func TestWriteRefusesWhenParityGroupMemberIsUnrecoverable(t *testing.T) {
 	os.WriteFile(parityPath, []byte("TRASHED"), 0o600)
 
 	// Write B into the same group — must be refused with a clear error.
-	_, err = coord.WriteFile(WriteRequest{
+	_, err = coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "unrecoverable-test",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,
@@ -104,7 +105,7 @@ func TestRecoveryHandlesUnrecoverableCommittedMemberGracefully(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	resA, err := coord.WriteFile(WriteRequest{
+	resA, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "unrecoverable-recovery",
 		LogicalPath:    "/test/a.bin",
 		AllowSynthetic: true,
@@ -116,7 +117,7 @@ func TestRecoveryHandlesUnrecoverableCommittedMemberGracefully(t *testing.T) {
 	groupID := resA.Extents[0].ParityGroupID
 
 	// B crashes at StateDataWritten — leaves an incomplete write in the journal.
-	_, err = coord.WriteFile(WriteRequest{
+	_, err = coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "unrecoverable-recovery",
 		LogicalPath:    "/test/b.bin",
 		AllowSynthetic: true,

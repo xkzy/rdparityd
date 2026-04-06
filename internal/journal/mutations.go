@@ -27,10 +27,13 @@ package journal
 //   metadata write → fsync → commit record → fsync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -550,6 +553,50 @@ func (c *Coordinator) TruncateFile(logicalPath string, newSize int64) (TruncateR
 	}, nil
 }
 
+// SaveFileData persists file data, either creating a new file or overwriting an existing one.
+// This is used by the FUSE Flush operation to persist buffered write data.
+func (c *Coordinator) SaveFileData(logicalPath string, data []byte) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	// First, delete the existing file if it exists
+	c.mu.Lock()
+	state, err := c.loadState(metadata.PrototypeState("demo"))
+	c.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var fileExists bool
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			fileExists = true
+			break
+		}
+	}
+
+	if fileExists {
+		// Delete existing file - this handles its own locking
+		_, err := c.DeleteFile(logicalPath)
+		if err != nil {
+			return fmt.Errorf("delete existing file: %w", err)
+		}
+	}
+
+	// Now use WriteFile to create the new file - it handles locking internally
+	_, err = c.WriteFile(context.Background(), WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    logicalPath,
+		Payload:        data,
+		AllowSynthetic: false,
+	})
+	return err
+}
+
 // DeleteFile removes a file and all its extents from the pool.
 func (c *Coordinator) DeleteFile(logicalPath string) (DeleteResult, error) {
 	if c == nil {
@@ -853,4 +900,525 @@ func allocateExtentsForExistingFile(fileID string, startOffset, appendSize int64
 
 func generateTxID(prefix string) string {
 	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+}
+
+// CreateDirectory creates a new directory at the specified path.
+func (c *Coordinator) CreateDirectory(logicalPath string, mode uint32) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	for _, f := range state.Files {
+		if f.Path == logicalPath {
+			return fmt.Errorf("file already exists: %s", logicalPath)
+		}
+	}
+
+	now := time.Now().UTC()
+	fileID := fmt.Sprintf("dir-%06d", len(state.Files)+1)
+	file := metadata.FileRecord{
+		FileID:    fileID,
+		Path:      logicalPath,
+		SizeBytes: 0,
+		MTime:     now,
+		CTime:     now,
+		Policy:    "default",
+		State:     metadata.FileStateAllocated,
+		FileType:  metadata.FileTypeDirectory,
+		Mode:      mode & 0o7777,
+	}
+
+	state.Files = append(state.Files, file)
+
+	txID := generateTxID("tx-mkdir")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// DeleteDirectory removes an empty directory.
+func (c *Coordinator) DeleteDirectory(logicalPath string) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var fileIndex int = -1
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			fileIndex = i
+			break
+		}
+	}
+	if fileIndex < 0 {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	file := state.Files[fileIndex]
+	if file.FileType != metadata.FileTypeDirectory {
+		return fmt.Errorf("not a directory: %s", logicalPath)
+	}
+
+	dirPrefix := logicalPath + "/"
+	for _, f := range state.Files {
+		if strings.HasPrefix(f.Path, dirPrefix) {
+			return fmt.Errorf("directory not empty: %s", logicalPath)
+		}
+	}
+
+	now := time.Now().UTC()
+	txID := generateTxID("tx-rmdir")
+	state.Files = append(state.Files[:fileIndex], state.Files[fileIndex+1:]...)
+
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// CreateSymlink creates a symbolic link at logicalPath pointing to target.
+func (c *Coordinator) CreateSymlink(logicalPath string, target string, mode uint32) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+	if target == "" {
+		return fmt.Errorf("target is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	for _, f := range state.Files {
+		if f.Path == logicalPath {
+			return fmt.Errorf("file already exists: %s", logicalPath)
+		}
+	}
+
+	now := time.Now().UTC()
+	fileID := fmt.Sprintf("sym-%06d", len(state.Files)+1)
+	file := metadata.FileRecord{
+		FileID:     fileID,
+		Path:       logicalPath,
+		SizeBytes:  int64(len(target)),
+		MTime:      now,
+		CTime:      now,
+		Policy:     "default",
+		State:      metadata.FileStateAllocated,
+		FileType:   metadata.FileTypeSymlink,
+		Mode:       mode & 0o7777,
+		LinkTarget: target,
+	}
+
+	state.Files = append(state.Files, file)
+
+	txID := generateTxID("tx-symlink")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// CreateHardLink creates a hard link at newPath pointing to existing file at oldPath.
+func (c *Coordinator) CreateHardLink(oldPath string, newPath string) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if oldPath == "" || newPath == "" {
+		return fmt.Errorf("old path and new path are required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var sourceFile *metadata.FileRecord
+	for i := range state.Files {
+		if state.Files[i].Path == oldPath {
+			sourceFile = &state.Files[i]
+			break
+		}
+	}
+	if sourceFile == nil {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, oldPath)
+	}
+
+	if sourceFile.FileType == metadata.FileTypeDirectory {
+		return fmt.Errorf("cannot hard link directories")
+	}
+
+	for _, f := range state.Files {
+		if f.Path == newPath {
+			return fmt.Errorf("file already exists: %s", newPath)
+		}
+	}
+
+	now := time.Now().UTC()
+	link := *sourceFile
+	link.Path = newPath
+	link.CTime = now
+	link.MTime = now
+
+	state.Files = append(state.Files, link)
+
+	txID := generateTxID("tx-link")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// SetFileMode updates the mode of an existing file.
+func (c *Coordinator) SetFileMode(logicalPath string, mode uint32) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var fileIndex int = -1
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			fileIndex = i
+			break
+		}
+	}
+	if fileIndex < 0 {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	now := time.Now().UTC()
+	state.Files[fileIndex].Mode = mode & 0o7777
+	state.Files[fileIndex].MTime = now
+
+	txID := generateTxID("tx-chmod")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// SetFileTimes updates the access and modification times of an existing file.
+func (c *Coordinator) SetFileTimes(logicalPath string, atime time.Time, mtime time.Time) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	var fileIndex int = -1
+	for i := range state.Files {
+		if state.Files[i].Path == logicalPath {
+			fileIndex = i
+			break
+		}
+	}
+	if fileIndex < 0 {
+		return fmt.Errorf("%w: %s", ErrFileNotFound, logicalPath)
+	}
+
+	now := time.Now().UTC()
+	state.Files[fileIndex].MTime = mtime
+	state.Files[fileIndex].CTime = now
+
+	txID := generateTxID("tx-utimens")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
+}
+
+// CreateSpecialFile creates a special file (FIFO, socket, block device, char device).
+func (c *Coordinator) CreateSpecialFile(logicalPath string, mode uint32, devMajor uint32, devMinor uint32) error {
+	if c == nil {
+		return fmt.Errorf("coordinator is nil")
+	}
+	if logicalPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	lock, err := c.acquireExclusiveOperationLock()
+	if err != nil {
+		return err
+	}
+	defer lock.release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if err := c.ensureRecoveredLocked(""); err != nil {
+		return err
+	}
+
+	state, err := c.loadState(metadata.SampleState{})
+	if err != nil {
+		return fmt.Errorf("load metadata state: %w", err)
+	}
+
+	for _, f := range state.Files {
+		if f.Path == logicalPath {
+			return fmt.Errorf("file already exists: %s", logicalPath)
+		}
+	}
+
+	fileType := metadata.FileTypeFromMode(mode)
+	now := time.Now().UTC()
+	fileID := fmt.Sprintf("dev-%06d", len(state.Files)+1)
+	file := metadata.FileRecord{
+		FileID:    fileID,
+		Path:      logicalPath,
+		SizeBytes: 0,
+		MTime:     now,
+		CTime:     now,
+		Policy:    "default",
+		State:     metadata.FileStateAllocated,
+		FileType:  fileType,
+		Mode:      mode & 0o7777,
+		DevMajor:  devMajor,
+		DevMinor:  devMinor,
+	}
+
+	switch fileType {
+	case metadata.FileTypeFIFO:
+		file.Mode = mode | syscall.S_IFIFO
+	case metadata.FileTypeSocket:
+		file.Mode = mode | syscall.S_IFSOCK
+	case metadata.FileTypeBlockDevice:
+		file.Mode = mode | syscall.S_IFBLK
+	case metadata.FileTypeCharDevice:
+		file.Mode = mode | syscall.S_IFCHR
+	default:
+		return fmt.Errorf("not a special file type: %v", fileType)
+	}
+
+	state.Files = append(state.Files, file)
+
+	txID := generateTxID("tx-mknod")
+	state.Transactions = append(state.Transactions, metadata.Transaction{
+		TxID:      txID,
+		State:     string(StateCommitted),
+		StartedAt: now,
+	})
+
+	if _, err := c.saveStateSnapshot(state); err != nil {
+		return fmt.Errorf("save metadata: %w", err)
+	}
+
+	baseRecord := Record{
+		TxID:      txID,
+		State:     StatePrepared,
+		Timestamp: now,
+	}
+	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
+		return fmt.Errorf("append committed record: %w", err)
+	}
+	c.publishCommittedState(state)
+
+	return nil
 }

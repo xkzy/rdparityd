@@ -805,12 +805,14 @@ func (c *Coordinator) GrowFile(logicalPath string, appendData []byte) (GrowResul
 		newExtents[i].Checksum = digestBytes(data)
 		newExtents[i].ChecksumAlg = ChecksumAlgorithm
 	}
+	newExtentByID := make(map[string]metadata.Extent, len(newExtents))
+	for i := range newExtents {
+		newExtentByID[newExtents[i].ExtentID] = newExtents[i]
+	}
 	for i := range state.Extents {
-		for j := range newExtents {
-			if state.Extents[i].ExtentID == newExtents[j].ExtentID {
-				state.Extents[i].Checksum = newExtents[j].Checksum
-				state.Extents[i].ChecksumAlg = newExtents[j].ChecksumAlg
-			}
+		if newExt, ok := newExtentByID[state.Extents[i].ExtentID]; ok {
+			state.Extents[i].Checksum = newExt.Checksum
+			state.Extents[i].ChecksumAlg = newExt.ChecksumAlg
 		}
 	}
 	for _, ext := range newExtents {

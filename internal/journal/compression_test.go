@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/xkzy/rdparityd/internal/metadata"
@@ -107,7 +108,7 @@ func TestCompressionWithWriteFile(t *testing.T) {
 	testData := bytes.Repeat([]byte("This is repeated test data for compression. "), 100)
 
 	// Write with zstd compression
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test",
 		LogicalPath:    "/test/compressed.bin",
 		Payload:        testData,

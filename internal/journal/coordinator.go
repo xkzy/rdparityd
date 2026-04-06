@@ -568,6 +568,7 @@ func applyCompressionUpdates(state *metadata.SampleState, extents *[]metadata.Ex
 		return nil
 	}
 
+	newExtentByID := make(map[string]*metadata.Extent, len(*extents))
 	for i := range *extents {
 		originalData := extentData((*extents)[i], payload)
 		compressedData, err := compress(originalData, compAlg)
@@ -578,15 +579,14 @@ func applyCompressionUpdates(state *metadata.SampleState, extents *[]metadata.Ex
 		(*extents)[i].CompressedSize = int64(len(compressedData))
 		(*extents)[i].Checksum = digestBytes(compressedData)
 		(*extents)[i].ChecksumAlg = ChecksumAlgorithm
+		newExtentByID[(*extents)[i].ExtentID] = &(*extents)[i]
 	}
 	for i := range state.Extents {
-		for j := range *extents {
-			if state.Extents[i].ExtentID == (*extents)[j].ExtentID {
-				state.Extents[i].CompressionAlg = (*extents)[j].CompressionAlg
-				state.Extents[i].CompressedSize = (*extents)[j].CompressedSize
-				state.Extents[i].Checksum = (*extents)[j].Checksum
-				state.Extents[i].ChecksumAlg = (*extents)[j].ChecksumAlg
-			}
+		if newExt, ok := newExtentByID[state.Extents[i].ExtentID]; ok {
+			state.Extents[i].CompressionAlg = newExt.CompressionAlg
+			state.Extents[i].CompressedSize = newExt.CompressedSize
+			state.Extents[i].Checksum = newExt.Checksum
+			state.Extents[i].ChecksumAlg = newExt.ChecksumAlg
 		}
 	}
 	return nil
@@ -927,7 +927,11 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 	}
 
 	groups := make(map[string][]metadata.Extent)
-	groupOrder := make([]string, 0)
+	groupOrder := make([]string, 0, len(state.ParityGroups))
+	groupIndex := make(map[string]int, len(state.ParityGroups))
+	for i, group := range state.ParityGroups {
+		groupIndex[group.ParityGroupID] = i
+	}
 	for _, extent := range state.Extents {
 		for _, target := range extents {
 			if extent.ParityGroupID == target.ParityGroupID {
@@ -1019,10 +1023,8 @@ func writeParityFiles(rootDir string, state *metadata.SampleState, extents []met
 		if err := verifyOnDiskParityBytes(parityPath, parityChecksum, maxLen); err != nil {
 			return fmt.Errorf("I4: post-write parity readback failed for group %s: %w", groupID, err)
 		}
-		for i := range state.ParityGroups {
-			if state.ParityGroups[i].ParityGroupID == groupID {
-				state.ParityGroups[i].ParityChecksum = parityChecksum
-			}
+		if idx, ok := groupIndex[groupID]; ok {
+			state.ParityGroups[idx].ParityChecksum = parityChecksum
 		}
 		written++
 	}

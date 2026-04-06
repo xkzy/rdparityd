@@ -1,0 +1,93 @@
+.TH RTPARITYCTL 1 "April 2026" "rtparityd 0.1.0"
+.SH NAME
+rtparityctl \- CLI client for rtparityd daemon
+
+.SH SYNOPSIS
+.B rtparityctl
+[\-s \fISOCKET\fR]
+\fICOMMAND\fR [\fIOPTIONS\fR]
+
+.SH DESCRIPTION
+\fBrtparityctl\fR is a command-line client that communicates with the rtparityd
+daemon via a Unix domain socket. It sends JSON commands and displays the
+responses.
+
+.SH OPTIONS
+.TP
+.BI \-s " SOCKET"
+Path to the Unix socket (default: /var/run/rtparityd/rtparityd.sock)
+Can also be set via \fBRTPARITYD_SOCKET\fR environment variable.
+
+.SH COMMANDS
+.TP
+.B health
+Display pool health status.
+
+.TP
+.B metrics
+Display operation counters and latency histograms.
+
+.TP
+.B status
+Display full pool status.
+
+.TP
+.BI write " PATH DATA"
+Write data to a path.
+.RS
+.TP
+.I PATH
+Logical file path
+.TP
+.I DATA
+Data to write (will be base64 encoded)
+.RE
+
+.TP
+.BI read " PATH"
+Read data from a path.
+
+.TP
+.B scrub [\-\-repair]
+Run integrity check. Use \-\-repair to auto-repair corrupted extents.
+
+.TP
+.BI rebuild " DISK"
+Rebuild extents from a specific disk.
+
+.TP
+.B rebuild\-all
+Rebuild all disks with missing extents.
+
+.SH ENVIRONMENT
+.TP
+.B RTPARITYD_SOCKET
+Override default socket path.
+
+.SH EXAMPLES
+.nf
+# Check health
+rtparityctl health
+
+# Write a file
+rtparityctl write /shares/data/file.bin "Hello World"
+
+# Read a file
+rtparityctl read /shares/data/file.bin
+
+# Scrub with auto-repair
+rtparityctl scrub --repair
+
+# Rebuild disk
+rtparityctl rebuild disk-01
+.fi
+
+.SH SEE ALSO
+.BR rtparityd (8),
+.BR rtpctl (1)
+
+.SH AUTHOR
+Written by the rtparityd project.
+
+.SH LICENSE
+GNU General Public License version 2

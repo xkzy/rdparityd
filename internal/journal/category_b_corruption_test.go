@@ -31,6 +31,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,7 +53,7 @@ func TestB1_CorruptMagicBytesDetected(t *testing.T) {
 
 	// Step 1: Set up committed state
 	payload := makePayload((1 << 20), 23)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b1_magic.bin",
 		AllowSynthetic: true,
@@ -65,7 +66,7 @@ func TestB1_CorruptMagicBytesDetected(t *testing.T) {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
 	// Keep a partial write in the journal so the corruption helpers have bytes to corrupt.
-	_, _ = coordinator.WriteFile(WriteRequest{
+	_, _ = coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName: "test_pool", LogicalPath: "/test/b1_pending.bin",
 		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
 	})
@@ -112,7 +113,7 @@ func TestB2_CorruptTxIDDetected(t *testing.T) {
 
 	// Step 1: Set up committed state
 	payload := makePayload((1 << 20), 31)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b2_txid.bin",
 		AllowSynthetic: true,
@@ -124,7 +125,7 @@ func TestB2_CorruptTxIDDetected(t *testing.T) {
 	if writeResult.FinalState != StateCommitted {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
-	_, _ = coordinator.WriteFile(WriteRequest{
+	_, _ = coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName: "test_pool", LogicalPath: "/test/b2_pending.bin",
 		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
 	})
@@ -163,7 +164,7 @@ func TestB3_CorruptCommitRecordState(t *testing.T) {
 
 	// Step 1: Write and commit a file
 	payload := makePayload((1 << 20), 37)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b3_commit.bin",
 		AllowSynthetic: true,
@@ -216,7 +217,7 @@ func TestB4_InvalidChecksumDetected(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 41)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b4_checksum.bin",
 		AllowSynthetic: true,
@@ -228,7 +229,7 @@ func TestB4_InvalidChecksumDetected(t *testing.T) {
 	if writeResult.FinalState != StateCommitted {
 		t.Fatalf("expected StateCommitted, got %s", writeResult.FinalState)
 	}
-	_, _ = coordinator.WriteFile(WriteRequest{
+	_, _ = coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName: "test_pool", LogicalPath: "/test/b4_pending.bin",
 		AllowSynthetic: true, SizeBytes: 512, FailAfter: StatePrepared,
 	})
@@ -268,7 +269,7 @@ func TestB5_StaleGenerationDetected(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 43)
-	_, err := coordinator.WriteFile(WriteRequest{
+	_, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b5_gen.bin",
 		AllowSynthetic: true,
@@ -320,7 +321,7 @@ func TestB6_DuplicateTransactionHandled(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 47)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b6_dup.bin",
 		AllowSynthetic: true,
@@ -378,7 +379,7 @@ func TestB7_JournalTailGarbageIgnored(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 53)
-	_, err := coordinator.WriteFile(WriteRequest{
+	_, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b7_garbage.bin",
 		AllowSynthetic: true,
@@ -430,7 +431,7 @@ func TestB8_ReorderedRecordsDetected(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 59)
-	_, err := coordinator.WriteFile(WriteRequest{
+	_, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b8_reorder.bin",
 		AllowSynthetic: true,
@@ -481,7 +482,7 @@ func TestB9_RemoveCommitMarkerCausesAbort(t *testing.T) {
 	// Step 1: Write, stopping at StateMetadataWritten (before commit record).
 	// This is the correct scenario for testing commit-marker removal.
 	payload := makePayload((1 << 20), 61)
-	writeResult, err := coordinator.WriteFile(WriteRequest{
+	writeResult, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b9_nocommit.bin",
 		AllowSynthetic: true,
@@ -544,7 +545,7 @@ func TestB10_TruncatedJournalPartialFsync(t *testing.T) {
 
 	// Step 1: Write and commit
 	payload := makePayload((1 << 20), 67)
-	_, err := coordinator.WriteFile(WriteRequest{
+	_, err := coordinator.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test_pool",
 		LogicalPath:    "/test/b10_trunc.bin",
 		AllowSynthetic: true,

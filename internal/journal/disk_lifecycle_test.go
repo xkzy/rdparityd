@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -43,7 +44,7 @@ func TestReplaceDiskReassignsExtents(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.bin")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "demo",
 		LogicalPath:    "/replace.bin",
 		AllowSynthetic: true,
@@ -148,7 +149,7 @@ func TestConcurrentDiskLifecycleAndWritePaths(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := coord.WriteFile(WriteRequest{
+			_, err := coord.WriteFile(context.Background(), WriteRequest{
 				PoolName:       "demo",
 				LogicalPath:    fmt.Sprintf("/concurrent-%d.bin", i),
 				AllowSynthetic: true,

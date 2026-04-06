@@ -437,7 +437,7 @@ func main() {
 
 	connSem := make(chan struct{}, maxConnections)
 
-	go monitorMemory()
+	go monitorMemory(state)
 	go monitorMaintenanceWindow(state)
 	go monitorAlerts(state)
 
@@ -550,6 +550,7 @@ func monitorAlerts(state *runtimeState) {
 
 	var lastStartupError string
 	var lastDiskFailures int
+	var lastShuttingDown bool
 
 	for {
 		select {
@@ -579,23 +580,29 @@ func monitorAlerts(state *runtimeState) {
 				lastDiskFailures = failedDisks
 			}
 
-			if shuttingDown && !shuttingDown {
+			if shuttingDown && !lastShuttingDown {
 				sendAlert(state, "shutdown", "daemon is shutting down")
 			}
+			lastShuttingDown = shuttingDown
 		}
 	}
 }
 
-func monitorMemory() {
+func monitorMemory(state *runtimeState) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		var memStats runtime.MemStats
-		runtime.ReadMemStats(&memStats)
-		memUsedMB := memStats.Alloc / 1024 / 1024
-		if memUsedMB > memoryThresholdMB {
-			logger.Warn("high memory usage", "memory_mb", memUsedMB, "threshold_mb", memoryThresholdMB)
+	for {
+		select {
+		case <-state.shutdownCh:
+			return
+		case <-ticker.C:
+			var memStats runtime.MemStats
+			runtime.ReadMemStats(&memStats)
+			memUsedMB := memStats.Alloc / 1024 / 1024
+			if memUsedMB > memoryThresholdMB {
+				logger.Warn("high memory usage", "memory_mb", memUsedMB, "threshold_mb", memoryThresholdMB)
+			}
 		}
 	}
 }

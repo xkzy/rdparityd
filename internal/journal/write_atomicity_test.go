@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,7 @@ func TestWriteAtomicityCommittedStateIsDurable(t *testing.T) {
 	// Write a file to completion.
 	coord := NewCoordinator(metaPath, journalPath)
 	payload := []byte("test data for atomicity")
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "test-atomicity",
 		LogicalPath: "/test/atomic-write.bin",
 		Payload:     payload,
@@ -84,7 +85,7 @@ func TestWriteAtomicityFailedStateIsNotDurable(t *testing.T) {
 
 	// Write a file but fail at StateDataWritten (before commit).
 	payload := []byte("partial write")
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "test-partial",
 		LogicalPath: "/test/partial.bin",
 		Payload:     payload,
@@ -163,7 +164,7 @@ func TestWriteAtomicityCrashBetweenCommitAndReturn(t *testing.T) {
 
 	// Write a complete transaction.
 	coord1 := NewCoordinator(metaPath, journalPath)
-	result, err := coord1.WriteFile(WriteRequest{
+	result, err := coord1.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-crash-commit",
 		LogicalPath:    "/test/crash-file.bin",
 		AllowSynthetic: true,
@@ -175,7 +176,7 @@ func TestWriteAtomicityCrashBetweenCommitAndReturn(t *testing.T) {
 
 	// Now simulate a scenario where the write succeeded but recovery is needed.
 	// Create a new write that fails and needs recovery.
-	result2, err := coord1.WriteFile(WriteRequest{
+	result2, err := coord1.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-crash-commit",
 		LogicalPath:    "/test/crash-file2.bin",
 		AllowSynthetic: true,
@@ -225,7 +226,7 @@ func TestWriteAtomicityDoubleFailureIsDetected(t *testing.T) {
 	coord := NewCoordinator(metaPath, journalPath)
 
 	// First attempt: fail at StateDataWritten.
-	_, err := coord.WriteFile(WriteRequest{
+	_, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "test-double-fail",
 		LogicalPath:    "/test/fail-twice.bin",
 		AllowSynthetic: true,
@@ -282,7 +283,7 @@ func TestWriteAtomicityJournalAndMetadataConsistency(t *testing.T) {
 	// Write multiple files.
 	for i := 1; i <= 3; i++ {
 		path := fmt.Sprintf("/test/file%d.bin", i)
-		_, err := coord.WriteFile(WriteRequest{
+		_, err := coord.WriteFile(context.Background(), WriteRequest{
 			PoolName:       "test-consistency",
 			LogicalPath:    path,
 			AllowSynthetic: true,
@@ -329,7 +330,7 @@ func TestWriteAtomicityReadAfterWrite(t *testing.T) {
 
 	// Write test data.
 	testData := []byte("this is the test data for atomicity verification")
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "test-read-after-write",
 		LogicalPath: "/test/read-data.bin",
 		Payload:     testData,

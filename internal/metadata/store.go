@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 )
 
@@ -41,6 +42,14 @@ const (
 	snapHeaderSize     = 72 // 40-byte prefix + 32-byte BLAKE3 hash
 	maxBinaryStringLen = 1<<16 - 1
 	maxBinaryCount     = 1<<16 - 1
+)
+
+var (
+	ErrInvalidMetadataMagic       = errors.New("invalid metadata magic")
+	ErrMetadataChecksumMismatch   = errors.New("metadata checksum mismatch")
+	ErrUnsupportedMetadataVersion = errors.New("unsupported metadata version")
+	ErrMetadataTruncated          = errors.New("truncated metadata")
+	ErrMalformedMetadataPayload   = errors.New("malformed metadata payload")
 )
 
 // SnapshotEnvelope wraps the decoded SampleState with metadata used by the
@@ -98,7 +107,7 @@ func (s *Store) Save(state SampleState) (SnapshotEnvelope, error) {
 	}
 
 	tmpPath := s.path + ".tmp"
-	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|unix.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return SnapshotEnvelope{}, fmt.Errorf("open metadata temp file: %w", err)
 	}
@@ -154,11 +163,11 @@ func (s *Store) Load() (SampleState, error) {
 
 	// Verify magic.
 	if string(hdrPrefix[0:4]) != snapshotMagic {
-		return SampleState{}, fmt.Errorf("invalid metadata magic %q", string(hdrPrefix[0:4]))
+		return SampleState{}, fmt.Errorf("%w: got %q", ErrInvalidMetadataMagic, string(hdrPrefix[0:4]))
 	}
 	version := binary.BigEndian.Uint16(hdrPrefix[4:6])
 	if version < 1 || version > SnapshotVersion {
-		return SampleState{}, fmt.Errorf("unsupported metadata version %d (supported: 1-%d)", version, SnapshotVersion)
+		return SampleState{}, fmt.Errorf("%w: %d (supported: 1-%d)", ErrUnsupportedMetadataVersion, version, SnapshotVersion)
 	}
 	if version != SnapshotVersion {
 		state, err := migrateState(int(version), SnapshotVersion, payload)
@@ -173,13 +182,13 @@ func (s *Store) Load() (SampleState, error) {
 	}
 	payloadLen := binary.BigEndian.Uint32(hdrPrefix[24:28])
 	if uint32(len(payload)) != payloadLen {
-		return SampleState{}, fmt.Errorf("metadata payload length mismatch: header=%d actual=%d", payloadLen, len(payload))
+		return SampleState{}, fmt.Errorf("%w: header=%d actual=%d", ErrMetadataTruncated, payloadLen, len(payload))
 	}
 
 	// Verify BLAKE3 hash.
 	computedHash := blake3.Sum256(payload)
 	if !bytes.Equal(computedHash[:], storedHash) {
-		return SampleState{}, fmt.Errorf("metadata snapshot checksum mismatch")
+		return SampleState{}, ErrMetadataChecksumMismatch
 	}
 
 	state, err := decodeState(payload)
@@ -612,6 +621,9 @@ func mreadFileRecord(r *bytes.Reader) (FileRecord, error) {
 	if f.SizeBytes, err = mreadInt64(r); err != nil {
 		return f, err
 	}
+	if f.SizeBytes < 0 {
+		return f, fmt.Errorf("file size_bytes is negative: %d", f.SizeBytes)
+	}
 	mNano, err := mreadInt64(r)
 	if err != nil {
 		return f, err
@@ -665,6 +677,9 @@ func mreadExtent(r *bytes.Reader) (Extent, error) {
 	}
 	if e.Length, err = mreadInt64(r); err != nil {
 		return e, err
+	}
+	if e.Length < 0 {
+		return e, fmt.Errorf("extent length is negative: %d", e.Length)
 	}
 	if e.DataDiskID, err = mreadStr(r); err != nil {
 		return e, err

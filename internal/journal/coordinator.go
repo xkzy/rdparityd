@@ -201,6 +201,45 @@ func (c *Coordinator) ensureRecoveredLocked(fallbackPoolName string) error {
 	return nil
 }
 
+// resolveDiskMountpoint finds the mountpoint for diskID from state and validates
+// it is usable. Returns rootDir if the disk has no mountpoint or the mountpoint
+// is invalid/inaccessible.
+func resolveDiskMountpoint(state metadata.SampleState, diskID, rootDir string) string {
+	for _, disk := range state.Disks {
+		if disk.DiskID == diskID {
+			return validateAndNormalizeMountpoint(disk.Mountpoint, rootDir)
+		}
+	}
+	return rootDir
+}
+
+// validateAndNormalizeMountpoint checks if mountpoint is safe to use. Returns
+// rootDir if mountpoint is empty, doesn't exist, isn't a directory, or lies
+// outside the rootDir subtree (to avoid writing to unintended locations).
+func validateAndNormalizeMountpoint(mountpoint, rootDir string) string {
+	if mountpoint == "" {
+		return rootDir
+	}
+	info, err := os.Stat(mountpoint)
+	if err != nil || !info.IsDir() {
+		return rootDir
+	}
+	if !isMountpointUnderRoot(mountpoint, rootDir) {
+		return rootDir
+	}
+	return mountpoint
+}
+
+// isMountpointUnderRoot returns true if mountpoint is rootDir or a subdirectory
+// of rootDir, or if rootDir is a subdirectory of mountpoint.
+func isMountpointUnderRoot(mountpoint, rootDir string) bool {
+	if strings.HasPrefix(rootDir, mountpoint) || strings.HasPrefix(mountpoint, rootDir) {
+		return true
+	}
+	rel, err := filepath.Rel(mountpoint, rootDir)
+	return err == nil && !strings.HasPrefix(rel, "..")
+}
+
 // saveStateSnapshot persists state to disk without updating the in-memory cache.
 // This allows metadata to be durable BEFORE the committed journal record is appended,
 // which is required for invariant I1.
@@ -306,32 +345,11 @@ func (c *Coordinator) WriteFile(ctx context.Context, req WriteRequest) (WriteRes
 	defer lock.release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if req.PoolName == "" {
-		req.PoolName = "demo"
-	}
-	if req.LogicalPath == "" {
-		return WriteResult{}, ErrLogicalPathRequired
-	}
-	if req.Payload != nil {
-		req.SizeBytes = int64(len(req.Payload))
-	}
-	if req.SizeBytes < 0 {
-		return WriteResult{}, fmt.Errorf("size must be non-negative")
-	}
-	if req.Payload == nil && !req.AllowSynthetic {
-		return WriteResult{}, fmt.Errorf(
-			"payload is required for production writes; synthetic data requires explicit AllowSynthetic opt-in")
+
+	if err := validateWriteRequest(&req); err != nil {
+		return WriteResult{}, err
 	}
 
-	// Validate compression algorithm
-	compAlg := CompressionAlg(req.CompressionAlg)
-	if req.CompressionAlg != "" && compAlg != CompressionZstd && compAlg != CompressionLZ4 && compAlg != CompressionSnappy && compAlg != CompressionGZip && compAlg != CompressionXZ {
-		return WriteResult{}, fmt.Errorf("unsupported compression algorithm: %s", req.CompressionAlg)
-	}
-
-	// A new allocation must never proceed while the journal still contains an
-	// interrupted transaction. Otherwise we could allocate extents against stale
-	// metadata and collide with extents that recovery has not yet merged.
 	if err := c.ensureRecoveredLocked(req.PoolName); err != nil {
 		return WriteResult{}, err
 	}
@@ -340,10 +358,8 @@ func (c *Coordinator) WriteFile(ctx context.Context, req WriteRequest) (WriteRes
 	if err != nil {
 		return WriteResult{}, fmt.Errorf("load metadata state: %w", err)
 	}
-	for _, existing := range state.Files {
-		if existing.Path == req.LogicalPath {
-			return WriteResult{}, fmt.Errorf("file already exists: %s", req.LogicalPath)
-		}
+	if err := checkFileNotExists(state, req.LogicalPath); err != nil {
+		return WriteResult{}, err
 	}
 
 	startedAt := time.Now().UTC()
@@ -353,85 +369,30 @@ func (c *Coordinator) WriteFile(ctx context.Context, req WriteRequest) (WriteRes
 		return WriteResult{}, fmt.Errorf("allocate file extents: %w", err)
 	}
 
-	affectedExtentIDs := make([]string, 0, len(extents))
-	for _, extent := range extents {
-		affectedExtentIDs = append(affectedExtentIDs, extent.ExtentID)
-	}
+	result := buildWriteResult(c, startedAt, file, extents)
+	baseRecord := buildBaseRecord(c, req, startedAt, file, extents)
 
-	txID := fmt.Sprintf("tx-write-%d", startedAt.UnixNano())
-	oldGeneration := int64(len(state.Transactions))
-	newGeneration := oldGeneration + 1
-	result := WriteResult{
-		TxID:         txID,
-		MetadataPath: c.metadataPath,
-		JournalPath:  c.journalPath,
-		FinalState:   StatePrepared,
-		File:         file,
-		Extents:      extents,
-	}
-
-	fileCopy := file
-	baseRecord := Record{
-		TxID:              txID,
-		Timestamp:         startedAt,
-		PoolName:          req.PoolName,
-		LogicalPath:       req.LogicalPath,
-		File:              &fileCopy,
-		Extents:           extents,
-		OldGeneration:     oldGeneration,
-		NewGeneration:     newGeneration,
-		AffectedExtentIDs: affectedExtentIDs,
-	}
 	if _, err := c.journal.Append(withState(baseRecord, StatePrepared)); err != nil {
 		return WriteResult{}, fmt.Errorf("append prepared record: %w", err)
 	}
-	if shouldStopAfter(req.FailAfter, StatePrepared) {
-		result.FinalState = StatePrepared
-		result.ReplayRequired = true
+	if stopAfter(&result, req.FailAfter, StatePrepared) {
 		return result, nil
 	}
 
-	// Apply compression if requested and update extent metadata
-	if compAlg != CompressionNone {
-		for i := range extents {
-			originalData := extentData(extents[i], req.Payload)
-			compressedData, err := compress(originalData, compAlg)
-			if err != nil {
-				return WriteResult{}, fmt.Errorf("compress extent %s: %w", extents[i].ExtentID, err)
-			}
-			extents[i].CompressionAlg = metadata.CompressionAlgorithm(compAlg)
-			extents[i].CompressedSize = int64(len(compressedData))
-			extents[i].Checksum = digestBytes(compressedData)
-			extents[i].ChecksumAlg = ChecksumAlgorithm
-		}
-		for i := range state.Extents {
-			for j := range extents {
-				if state.Extents[i].ExtentID == extents[j].ExtentID {
-					state.Extents[i].CompressionAlg = extents[j].CompressionAlg
-					state.Extents[i].CompressedSize = extents[j].CompressedSize
-					state.Extents[i].Checksum = extents[j].Checksum
-					state.Extents[i].ChecksumAlg = extents[j].ChecksumAlg
-				}
-			}
-		}
+	compAlg := CompressionAlg(req.CompressionAlg)
+	if err := applyCompressionUpdates(&state, &extents, req.Payload, compAlg); err != nil {
+		return WriteResult{}, err
 	}
 
-	// For uncompressed extents, compute checksums on raw data
-	// For compressed extents, checksums already computed on compressed data above
-	if compAlg == CompressionNone {
-		applyExtentChecksums(&state, extents, req.Payload)
-	}
-
-	if err := writeExtentFilesWithCompression(filepath.Dir(c.metadataPath), extents, req.Payload, compAlg, req.extentWriteLimit); err != nil {
+	rootDir := filepath.Dir(c.metadataPath)
+	if err := writeExtentFilesWithCompression(rootDir, extents, req.Payload, compAlg, req.extentWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write extent files: %w", err)
 	}
 	result.Extents = extents
 	if _, err := c.journal.Append(withState(baseRecord, StateDataWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append data-written record: %w", err)
 	}
-	if shouldStopAfter(req.FailAfter, StateDataWritten) {
-		result.FinalState = StateDataWritten
-		result.ReplayRequired = true
+	if stopAfter(&result, req.FailAfter, StateDataWritten) {
 		return result, nil
 	}
 
@@ -439,74 +400,162 @@ func (c *Coordinator) WriteFile(ctx context.Context, req WriteRequest) (WriteRes
 		return WriteResult{}, fmt.Errorf("verify committed parity inputs before parity rewrite: %w", err)
 	}
 	mergeParityGroups(&state, extents)
-	if err := writeParityFiles(filepath.Dir(c.metadataPath), &state, extents, req.parityWriteLimit); err != nil {
+	if err := writeParityFiles(rootDir, &state, extents, req.parityWriteLimit); err != nil {
 		return WriteResult{}, fmt.Errorf("write parity files: %w", err)
 	}
 	if _, err := c.journal.Append(withState(baseRecord, StateParityWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append parity-written record: %w", err)
 	}
-	if shouldStopAfter(req.FailAfter, StateParityWritten) {
-		result.FinalState = StateParityWritten
-		result.ReplayRequired = true
+	if stopAfter(&result, req.FailAfter, StateParityWritten) {
 		return result, nil
 	}
 
 	state.Transactions = append(state.Transactions, metadata.Transaction{
-		TxID:              txID,
+		TxID:              baseRecord.TxID,
 		State:             string(StateMetadataWritten),
 		StartedAt:         startedAt,
-		AffectedExtentIDs: affectedExtentIDs,
-		OldGeneration:     oldGeneration,
-		NewGeneration:     newGeneration,
-		ReplayRequired:    shouldStopAfter(req.FailAfter, StateMetadataWritten),
+		AffectedExtentIDs: baseRecord.AffectedExtentIDs,
+		OldGeneration:     baseRecord.OldGeneration,
+		NewGeneration:     baseRecord.NewGeneration,
+		ReplayRequired:    stopAfter(nil, req.FailAfter, StateMetadataWritten),
 	})
 	if _, err := c.journal.Append(withState(baseRecord, StateMetadataWritten)); err != nil {
 		return WriteResult{}, fmt.Errorf("append metadata-written record: %w", err)
 	}
-	if shouldStopAfter(req.FailAfter, StateMetadataWritten) {
-		// For crash recovery: save state snapshot before returning to ensure
-		// recovery can see the partial transaction state if needed.
+	if stopAfter(&result, req.FailAfter, StateMetadataWritten) {
 		if _, err := c.commitState(state); err != nil {
 			return WriteResult{}, fmt.Errorf("save metadata snapshot on stop: %w", err)
 		}
-		result.FinalState = StateMetadataWritten
-		result.ReplayRequired = true
 		return result, nil
 	}
 
 	committedAt := time.Now().UTC()
-
-	// 1. Mark transaction committed in the state that will be snapshotted.
 	upsertTransaction(&state, baseRecord, StateCommitted, false, &committedAt)
 
-	// 2. Persist metadata first, but do NOT publish cachedState yet.
-	// This ensures metadata is durable BEFORE the committed record is appended,
-	// satisfying invariant I1.
 	if _, err := c.saveStateSnapshot(state); err != nil {
 		return WriteResult{}, fmt.Errorf("save committed metadata snapshot: %w", err)
 	}
 
-	// 3. Only after durable metadata exists, append the committed journal record.
 	if _, err := c.journal.Append(withState(baseRecord, StateCommitted)); err != nil {
 		return WriteResult{}, fmt.Errorf("append committed record: %w", err)
 	}
 
-	// 4. Now the transaction is truly visible - publish cached state.
-	// This must happen AFTER both metadata and committed record are durable.
 	c.publishCommittedState(state)
-
 	result.FinalState = StateCommitted
 
-	// Phase 3 — Enforce invariants for the data touched by this write. The write
-	// path must prove that its own extents/parity are durable and self-consistent,
-	// but it must not fail because of unrelated preexisting corruption elsewhere
-	// in the pool; that broader health signal belongs to scrub/startup admission.
-	rootDir := filepath.Dir(c.metadataPath)
 	if violations := CheckTargetedWriteIntegrity(rootDir, state, extents); len(violations) > 0 {
 		return WriteResult{}, fmt.Errorf("invariant violation after commit: %v", violations[0])
 	}
 
 	return result, nil
+}
+
+func validateWriteRequest(req *WriteRequest) error {
+	if req.PoolName == "" {
+		req.PoolName = "demo"
+	}
+	if req.LogicalPath == "" {
+		return ErrLogicalPathRequired
+	}
+	if req.Payload != nil {
+		req.SizeBytes = int64(len(req.Payload))
+	}
+	if req.SizeBytes < 0 {
+		return fmt.Errorf("size must be non-negative")
+	}
+	if req.Payload == nil && !req.AllowSynthetic {
+		return fmt.Errorf("payload is required for production writes; synthetic data requires explicit AllowSynthetic opt-in")
+	}
+
+	compAlg := CompressionAlg(req.CompressionAlg)
+	if req.CompressionAlg != "" && compAlg != CompressionZstd && compAlg != CompressionLZ4 && compAlg != CompressionSnappy && compAlg != CompressionGZip && compAlg != CompressionXZ {
+		return fmt.Errorf("unsupported compression algorithm: %s", req.CompressionAlg)
+	}
+	return nil
+}
+
+func checkFileNotExists(state metadata.SampleState, logicalPath string) error {
+	for _, existing := range state.Files {
+		if existing.Path == logicalPath {
+			return fmt.Errorf("file already exists: %s", logicalPath)
+		}
+	}
+	return nil
+}
+
+func buildWriteResult(c *Coordinator, startedAt time.Time, file metadata.FileRecord, extents []metadata.Extent) WriteResult {
+	return WriteResult{
+		TxID:         fmt.Sprintf("tx-write-%d", startedAt.UnixNano()),
+		MetadataPath: c.metadataPath,
+		JournalPath:  c.journalPath,
+		FinalState:   StatePrepared,
+		File:         file,
+		Extents:      extents,
+	}
+}
+
+func buildBaseRecord(c *Coordinator, req WriteRequest, startedAt time.Time, file metadata.FileRecord, extents []metadata.Extent) Record {
+	oldGen := int64(len(c.cachedState.Transactions))
+	return Record{
+		TxID:              fmt.Sprintf("tx-write-%d", startedAt.UnixNano()),
+		Timestamp:         startedAt,
+		PoolName:          req.PoolName,
+		LogicalPath:       req.LogicalPath,
+		File:              &file,
+		Extents:           extents,
+		OldGeneration:     oldGen,
+		NewGeneration:     oldGen + 1,
+		AffectedExtentIDs: gatherExtentIDs(extents),
+	}
+}
+
+func gatherExtentIDs(extents []metadata.Extent) []string {
+	ids := make([]string, len(extents))
+	for i, e := range extents {
+		ids[i] = e.ExtentID
+	}
+	return ids
+}
+
+func stopAfter(result *WriteResult, failAfter, current State) bool {
+	if failAfter != "" && failAfter == current {
+		if result != nil {
+			result.FinalState = current
+			result.ReplayRequired = true
+		}
+		return true
+	}
+	return false
+}
+
+func applyCompressionUpdates(state *metadata.SampleState, extents *[]metadata.Extent, payload []byte, compAlg CompressionAlg) error {
+	if compAlg == CompressionNone {
+		applyExtentChecksums(state, *extents, payload)
+		return nil
+	}
+
+	for i := range *extents {
+		originalData := extentData((*extents)[i], payload)
+		compressedData, err := compress(originalData, compAlg)
+		if err != nil {
+			return fmt.Errorf("compress extent %s: %w", (*extents)[i].ExtentID, err)
+		}
+		(*extents)[i].CompressionAlg = metadata.CompressionAlgorithm(compAlg)
+		(*extents)[i].CompressedSize = int64(len(compressedData))
+		(*extents)[i].Checksum = digestBytes(compressedData)
+		(*extents)[i].ChecksumAlg = ChecksumAlgorithm
+	}
+	for i := range state.Extents {
+		for j := range *extents {
+			if state.Extents[i].ExtentID == (*extents)[j].ExtentID {
+				state.Extents[i].CompressionAlg = (*extents)[j].CompressionAlg
+				state.Extents[i].CompressedSize = (*extents)[j].CompressedSize
+				state.Extents[i].Checksum = (*extents)[j].Checksum
+				state.Extents[i].ChecksumAlg = (*extents)[j].ChecksumAlg
+			}
+		}
+	}
+	return nil
 }
 
 func withState(record Record, state State) Record {

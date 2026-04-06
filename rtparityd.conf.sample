@@ -1,0 +1,49 @@
+# rtparityd configuration file
+# Copy to /etc/rtparityd/rtparityd.conf
+
+[global]
+pool-name = "demo"
+journal-path = "/var/lib/rtparityd/journal.bin"
+metadata-path = "/var/lib/rtparityd/metadata.bin"
+snapshot-interval-hours = 24                     # periodic metadata snapshots (0 to disable)
+
+[server]
+socket-path = "/var/run/rtparityd/rtparityd.sock"
+require-root-user = true
+read-timeout-seconds = 30
+idle-timeout-seconds = 300
+max-timeout-ms = 300000                       # 5 minutes max per-request timeout
+
+[limits]
+max-request-size-bytes = 1048576        # 1MB
+max-write-size-bytes = 10737418240      # 10GB
+write-rate-limit-per-second = 10
+write-burst = 20
+read-rate-limit-per-second = 50
+read-burst = 100
+max-goroutines = 64
+slow-query-threshold-ms = 5000          # log warnings for slow queries
+
+[logging]
+level = "info"   # debug, info, warn, error
+json = true
+
+[audit]
+enabled = false              # enable audit logging
+path = "/var/log/rtparityd/audit.log"  # audit log path
+
+[alert]
+enabled = false              # enable webhook alerts on critical errors
+url = "http://localhost:9000/webhook"   # alert webhook URL
+
+[scrub]
+enabled = false              # enable automatic scrub
+interval-hours = 24          # run scrub every 24 hours
+start-hour = 2               # allowed window: 2am
+end-hour = 5                 # allowed window: 5am
+
+[disk-pool]
+num-disks = 4
+disk-size-bytes = 1099511627776  # 1TB
+extent-size-bytes = 67108864     # 64MB
+parity-segments = 2

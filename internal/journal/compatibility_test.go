@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,7 +25,7 @@ func TestCompatibility_DifferentFilesystemTypes(t *testing.T) {
 			path := "/test/" + fsType + ".bin"
 			payload := []byte("test data for " + fsType)
 
-			result, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+			result, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 			if err != nil {
 				t.Fatalf("WriteFile failed on %s: %v", fsType, err)
 			}
@@ -63,7 +64,7 @@ func TestCompatibility_ExtentPathsValid(t *testing.T) {
 
 	for _, path := range testPaths {
 		payload := []byte("data for " + path)
-		result, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
+		result, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload})
 		if err != nil {
 			t.Fatalf("WriteFile failed for %s: %v", path, err)
 		}
@@ -96,7 +97,7 @@ func TestCompatibility_RecoveryWithDifferentStates(t *testing.T) {
 		coord := NewCoordinator(metaPath, journalPath)
 
 		path := "/test/recovery_" + string(rune(scenario)) + ".bin"
-		_, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("test data")})
+		_, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: []byte("test data")})
 		if err != nil {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
@@ -130,7 +131,7 @@ func TestCompatibility_LargeExtentCount(t *testing.T) {
 	for i := 0; i < extentCount; i++ {
 		path := fmt.Sprintf("/test/extent_%03d.bin", i)
 		payload := []byte("data for extent " + string(rune(i)))
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}
@@ -164,7 +165,7 @@ func TestCompatibility_ParityGroupBoundaries(t *testing.T) {
 	for i := 0; i < writeCount; i++ {
 		path := "/test/group_" + string(rune(i)) + ".bin"
 		payload := []byte("data for group test " + string(rune(i)))
-		if _, err := coord.WriteFile(WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
+		if _, err := coord.WriteFile(context.Background(), WriteRequest{PoolName: "demo", LogicalPath: path, Payload: payload}); err != nil {
 			t.Fatalf("WriteFile %d failed: %v", i, err)
 		}
 	}

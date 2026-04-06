@@ -2,6 +2,7 @@ package journal
 
 import (
 	"bytes"
+	"context"
 	"path/filepath"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestRenameFileSamePathForcesRecoveryAndPreservesRecoveredFile(t *testing.T)
 	coord := NewCoordinator(metaPath, journalPath)
 
 	payload := makePayload(4096, 0x44)
-	res, err := coord.WriteFile(WriteRequest{
+	res, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "rename-noop-recovery",
 		LogicalPath:    "/test/pending.bin",
 		AllowSynthetic: true,

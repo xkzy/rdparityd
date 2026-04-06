@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
+	"io"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,41 +17,84 @@ import (
 
 	"github.com/xkzy/rdparityd/internal/journal"
 	"github.com/xkzy/rdparityd/internal/metadata"
+	"github.com/xkzy/rdparityd/internal/metrics"
+)
+
+const (
+	socketPerm    = 0o660
+	daemonVersion = "0.1.0"
 )
 
 type runtimeState struct {
-	// mu protects concurrent access to all mutable runtimeState fields.
-	// Handlers must hold mu.RLock for reads and mu.Lock for writes to
-	// Prototype and JournalSummary.
 	mu               sync.RWMutex
-	StartedAt        time.Time              `json:"started_at"`
-	Prototype        metadata.SampleState   `json:"prototype"`
-	MetadataPath     string                 `json:"metadata_path"`
-	JournalPath      string                 `json:"journal_path"`
-	Recovery         journal.RecoveryResult `json:"recovery"`
-	JournalSummary   journal.ReplaySummary  `json:"journal_summary"`
-	StartupError     string                 `json:"startup_error,omitempty"`
-	StartupAdmission startupAdmission       `json:"startup_admission"`
+	StartedAt        time.Time
+	Prototype        metadata.SampleState
+	MetadataPath     string
+	JournalPath      string
+	Recovery         journal.RecoveryResult
+	JournalSummary   journal.ReplaySummary
+	StartupError     string
+	StartupAdmission startupAdmission
 }
 
-// startupAdmission is the centralized startup/open decision for the daemon.
-// Status values:
-//   - "ok": safe to start normally
-//   - "degraded": safe to start, but operator attention is required
-//   - "refuse": must not start serving requests
-//
-// A refused startup is a hard gate: the daemon exits before ListenAndServe.
 type startupAdmission struct {
 	Status  string   `json:"status"`
 	Reasons []string `json:"reasons,omitempty"`
 }
 
+type command struct {
+	ID     string          `json:"id"`
+	Op     string          `json:"op"`
+	Params json.RawMessage `json:"params,omitempty"`
+}
+
+type response struct {
+	ID     string          `json:"id"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}
+
 func main() {
-	listen := flag.String("listen", ":8080", "HTTP listen address")
+	socketPath := flag.String("socket", "/var/run/rtparityd/rtparityd.sock", "unix socket path for control interface")
 	poolName := flag.String("pool-name", "demo", "prototype pool name")
-	journalPath := flag.String("journal-path", "/tmp/rtparityd/journal.log", "journal path to inspect during startup replay")
-	metadataPath := flag.String("metadata-path", "/tmp/rtparityd/metadata.json", "metadata snapshot path for the prototype state")
+	journalPath := flag.String("journal-path", "/var/lib/rtparityd/journal.bin", "journal path")
+	metadataPath := flag.String("metadata-path", "/var/lib/rtparityd/metadata.bin", "metadata snapshot path")
 	flag.Parse()
+
+	if !filepath.IsAbs(*socketPath) {
+		log.Fatalf("socket path must be absolute: %s", *socketPath)
+	}
+	if !filepath.IsAbs(*journalPath) {
+		log.Fatalf("journal-path must be absolute: %s", *journalPath)
+	}
+	if !filepath.IsAbs(*metadataPath) {
+		log.Fatalf("metadata-path must be absolute: %s", *metadataPath)
+	}
+	if *poolName == "" {
+		log.Fatalf("pool-name is required")
+	}
+	if strings.ContainsAny(*poolName, "/\\:") {
+		log.Fatalf("pool-name must not contain path separators: %s", *poolName)
+	}
+	if filepath.Dir(*metadataPath) == filepath.Dir(*journalPath) {
+		log.Printf("warning: metadata and journal share the same directory")
+	}
+
+	if err := os.MkdirAll(filepath.Dir(*socketPath), 0o755); err != nil {
+		log.Fatalf("create socket directory: %v", err)
+	}
+	if err := os.Remove(*socketPath); err != nil && !os.IsNotExist(err) {
+		log.Fatalf("remove existing socket: %v", err)
+	}
+
+	listener, err := net.Listen("unix", *socketPath)
+	if err != nil {
+		log.Fatalf("listen on socket: %v", err)
+	}
+	if err := os.Chmod(*socketPath, socketPerm); err != nil {
+		log.Fatalf("set socket permissions: %v", err)
+	}
+	defer os.Remove(*socketPath)
 
 	state := loadRuntimeState(*poolName, *journalPath, *metadataPath)
 	if state.StartupError != "" {
@@ -77,26 +123,343 @@ func main() {
 		log.Printf("startup reasons: %s", strings.Join(state.StartupAdmission.Reasons, "; "))
 	}
 
-	log.Printf("starting rtparityd prototype on %s", *listen)
-	if err := http.ListenAndServe(*listen, newMux(state)); err != nil {
-		log.Fatal(err)
+	log.Printf("rtparityd listening on %s", *socketPath)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if strings.Contains(err.Error(), "use of closed") {
+				break
+			}
+			log.Printf("accept error: %v", err)
+			continue
+		}
+		go handleConnection(conn, state)
 	}
 }
 
-func isRecoverableMissingFileError(err string) bool {
-	return strings.Contains(err, "file missing or unreadable")
-}
+func handleConnection(conn net.Conn, state *runtimeState) {
+	defer conn.Close()
 
-func allRecoverableMissingFileErrors(errs []string) bool {
-	if len(errs) == 0 {
-		return false
-	}
-	for _, err := range errs {
-		if !isRecoverableMissingFileError(err) {
-			return false
+	dec := json.NewDecoder(conn)
+	enc := json.NewEncoder(conn)
+
+	for {
+		var cmd command
+		if err := dec.Decode(&cmd); err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			sendError(enc, "", fmt.Errorf("decode command: %w", err))
+			return
+		}
+
+		resp := response{ID: cmd.ID}
+		result, err := handleCommand(cmd.Op, cmd.Params, state)
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Result = result
+		}
+
+		if err := enc.Encode(resp); err != nil {
+			log.Printf("encode response: %v", err)
+			return
 		}
 	}
-	return true
+}
+
+func sendError(enc *json.Encoder, id string, err error) {
+	enc.Encode(response{ID: id, Error: err.Error()})
+}
+
+func handleCommand(op string, params json.RawMessage, state *runtimeState) (json.RawMessage, error) {
+	switch op {
+	case "health":
+		return healthOp(state)
+	case "metrics":
+		return metricsOp()
+	case "write":
+		return writeOp(params, state)
+	case "read":
+		return readOp(params, state)
+	case "scrub":
+		return scrubOp(params, state)
+	case "rebuild":
+		return rebuildOp(params, state)
+	case "rebuild-all":
+		return rebuildAllOp(state)
+	case "status":
+		return statusOp(state)
+	default:
+		return nil, fmt.Errorf("unknown operation: %s", op)
+	}
+}
+
+func healthOp(state *runtimeState) (json.RawMessage, error) {
+	state.mu.RLock()
+	proto := state.Prototype
+	startupError := state.StartupError
+	status := state.healthStatus()
+	state.mu.RUnlock()
+
+	failedDisks := 0
+	for _, disk := range proto.Disks {
+		if disk.HealthStatus != "" && disk.HealthStatus != "online" {
+			failedDisks++
+		}
+	}
+
+	alertLevel := "ok"
+	if failedDisks > 0 {
+		alertLevel = "warning"
+	}
+	if startupError != "" {
+		alertLevel = "critical"
+	}
+
+	result := map[string]any{
+		"name":    "rtparityd",
+		"status":  status,
+		"version": daemonVersion,
+		"alert":   alertLevel,
+		"uptime":  time.Since(state.StartedAt).Seconds(),
+	}
+	return json.Marshal(result)
+}
+
+func metricsOp() (json.RawMessage, error) {
+	rec := metrics.Global()
+	snap := rec.Snapshot()
+	return json.Marshal(snap)
+}
+
+type writeParams struct {
+	Path      string `json:"path"`
+	Payload   []byte `json:"payload,omitempty"`
+	Size      int64  `json:"size"`
+	Synthetic bool   `json:"synthetic,omitempty"`
+}
+
+func writeOp(params json.RawMessage, state *runtimeState) (json.RawMessage, error) {
+	var p writeParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, errors.New("path is required")
+	}
+	if p.Payload == nil && !p.Synthetic && p.Size <= 0 {
+		return nil, errors.New("payload or size required")
+	}
+
+	state.mu.RLock()
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	state.mu.RUnlock()
+
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+	req := journal.WriteRequest{
+		PoolName:       "demo",
+		LogicalPath:    p.Path,
+		Payload:        p.Payload,
+		SizeBytes:      p.Size,
+		AllowSynthetic: p.Synthetic,
+	}
+
+	m := metrics.Global()
+	m.ActiveWrites.Inc()
+	m.WriteOps.Inc()
+	defer m.ActiveWrites.Dec()
+
+	start := time.Now()
+	defer func() { m.WriteLatency.Record(time.Since(start)) }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := coord.WriteFile(ctx, req)
+	if err != nil {
+		m.WriteErrors.Inc()
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+type readParams struct {
+	Path string `json:"path"`
+}
+
+func readOp(params json.RawMessage, state *runtimeState) (json.RawMessage, error) {
+	var p readParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.Path == "" {
+		return nil, errors.New("path is required")
+	}
+
+	state.mu.RLock()
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	state.mu.RUnlock()
+
+	m := metrics.Global()
+	m.ActiveReads.Inc()
+	m.ReadOps.Inc()
+	defer m.ActiveReads.Dec()
+
+	start := time.Now()
+	defer func() { m.ReadLatency.Record(time.Since(start)) }()
+
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+	result, err := coord.ReadFile(p.Path)
+	if err != nil {
+		m.ReadErrors.Inc()
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+type scrubParams struct {
+	Repair bool `json:"repair"`
+}
+
+func scrubOp(params json.RawMessage, state *runtimeState) (json.RawMessage, error) {
+	var p scrubParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		p.Repair = true
+	}
+
+	state.mu.RLock()
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	state.mu.RUnlock()
+
+	m := metrics.Global()
+	m.ScrubOps.Inc()
+	start := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+	result, err := coord.ScrubContext(ctx, p.Repair)
+	m.ScrubLatency.Record(time.Since(start))
+	if err != nil {
+		m.ScrubErrors.Inc()
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+type rebuildParams struct {
+	DiskID string `json:"disk"`
+}
+
+func rebuildOp(params json.RawMessage, state *runtimeState) (json.RawMessage, error) {
+	var p rebuildParams
+	if err := json.Unmarshal(params, &p); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	if p.DiskID == "" {
+		return nil, errors.New("disk is required")
+	}
+
+	state.mu.RLock()
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	state.mu.RUnlock()
+
+	m := metrics.Global()
+	m.RebuildOps.Inc()
+	start := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+	result, err := coord.RebuildDataDiskContext(ctx, p.DiskID)
+	m.RebuildLatency.Record(time.Since(start))
+	if err != nil {
+		m.RebuildErrors.Inc()
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func rebuildAllOp(state *runtimeState) (json.RawMessage, error) {
+	state.mu.RLock()
+	metadataPath := state.MetadataPath
+	journalPath := state.JournalPath
+	state.mu.RUnlock()
+
+	m := metrics.Global()
+	m.RebuildOps.Inc()
+	start := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	coord := journal.NewCoordinator(metadataPath, journalPath)
+	result, err := coord.RebuildAllDataDisksContext(ctx)
+	m.RebuildLatency.Record(time.Since(start))
+	if err != nil {
+		m.RebuildErrors.Inc()
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
+func statusOp(state *runtimeState) (json.RawMessage, error) {
+	state.mu.RLock()
+	proto := state.Prototype
+	metadataPath := state.MetadataPath
+	recovery := state.Recovery
+	summary := state.JournalSummary
+	status := state.healthStatus()
+	state.mu.RUnlock()
+
+	rootDir := filepath.Dir(metadataPath)
+	violations := journal.CheckIntegrityInvariants(rootDir, proto)
+
+	failedDiskSet := make(map[string]struct{})
+	for _, disk := range proto.Disks {
+		if disk.HealthStatus != "" && disk.HealthStatus != "online" {
+			failedDiskSet[disk.DiskID] = struct{}{}
+		}
+	}
+	failedDisks := make([]string, 0, len(failedDiskSet))
+	for diskID := range failedDiskSet {
+		failedDisks = append(failedDisks, diskID)
+	}
+
+	result := map[string]any{
+		"status":                  status,
+		"startup_admission":       state.StartupAdmission,
+		"pool_state":              status,
+		"managed_files":           len(proto.Files),
+		"allocated_extents":       len(proto.Extents),
+		"journal_records":         summary.TotalRecords,
+		"journal_requires_replay": summary.RequiresReplay,
+		"recovered_transactions":  len(recovery.RecoveredTxIDs),
+		"aborted_transactions":    len(recovery.AbortedTxIDs),
+		"failed_disks":            failedDisks,
+		"invariant_violations":    len(violations),
+		"uptime_seconds":          time.Since(state.StartedAt).Seconds(),
+	}
+	return json.Marshal(result)
+}
+
+func (s *runtimeState) healthStatus() string {
+	switch s.StartupAdmission.Status {
+	case "refuse":
+		return "error"
+	case "degraded":
+		return "degraded"
+	default:
+		return "ok"
+	}
 }
 
 func evaluateStartupAdmission(state *runtimeState) startupAdmission {
@@ -104,14 +467,6 @@ func evaluateStartupAdmission(state *runtimeState) startupAdmission {
 	rootDir := filepath.Dir(state.MetadataPath)
 	formatResult := journal.ValidateOnDiskFormats(rootDir, state.MetadataPath, state.JournalPath)
 	analysis := journal.AnalyzeMultiDiskFailures(rootDir, state.Prototype)
-
-	log.Printf("[DEBUG] startup admission: RequiresReplay=%v, formatErrors=%d, formatWarnings=%d",
-		state.JournalSummary.RequiresReplay, len(formatResult.Errors), len(formatResult.Warnings))
-	if len(formatResult.Warnings) > 0 && len(formatResult.Warnings) < 5 {
-		for i, w := range formatResult.Warnings {
-			log.Printf("[DEBUG] format warning %d: %s", i, w)
-		}
-	}
 
 	if state.StartupError != "" {
 		reasons = append(reasons, state.StartupError)
@@ -155,17 +510,17 @@ func loadRuntimeState(poolName, journalPath, metadataPath string) *runtimeState 
 		JournalPath:  journalPath,
 	}
 
-	recovery, err := journal.NewCoordinator(metadataPath, journalPath).RecoverWithState(metadata.PrototypeState(poolName))
+	recovery, err := journal.NewCoordinator(metadataPath, journalPath).Recover()
 	if err != nil {
 		state.StartupError = joinStartupError(state.StartupError, "recovery: "+err.Error())
 	} else {
 		state.Recovery = recovery
 	}
 
-	loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName))
+	loadedState, found, err := loadMetadataIfPresent(metadataPath)
 	if err != nil {
 		state.StartupError = joinStartupError(state.StartupError, "metadata: "+err.Error())
-	} else {
+	} else if found {
 		state.Prototype = loadedState
 	}
 
@@ -179,6 +534,17 @@ func loadRuntimeState(poolName, journalPath, metadataPath string) *runtimeState 
 	return state
 }
 
+func loadMetadataIfPresent(metadataPath string) (metadata.SampleState, bool, error) {
+	loadedState, err := metadata.NewStore(metadataPath).Load()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return metadata.SampleState{}, false, nil
+		}
+		return metadata.SampleState{}, false, err
+	}
+	return loadedState, true, nil
+}
+
 func joinStartupError(current, next string) string {
 	if current == "" {
 		return next
@@ -186,447 +552,18 @@ func joinStartupError(current, next string) string {
 	return current + "; " + next
 }
 
-func (s *runtimeState) healthStatus() string {
-	switch s.StartupAdmission.Status {
-	case "refuse":
-		return "error"
-	case "degraded":
-		return "degraded"
-	default:
-		return "ok"
-	}
+func isRecoverableMissingFileError(err string) bool {
+	return strings.Contains(err, "file missing or unreadable")
 }
 
-func diagnosticsView(state *runtimeState) map[string]any {
-	state.mu.RLock()
-	proto := state.Prototype
-	metadataPath := state.MetadataPath
-	journalPath := state.JournalPath
-	recovery := state.Recovery
-	summary := state.JournalSummary
-	startupError := state.StartupError
-	admission := state.StartupAdmission
-	status := state.healthStatus()
-	state.mu.RUnlock()
-
-	rootDir := filepath.Dir(metadataPath)
-	formatResult := journal.ValidateOnDiskFormats(rootDir, metadataPath, journalPath)
-	analysis := journal.AnalyzeMultiDiskFailures(rootDir, proto)
-	violations := journal.CheckIntegrityInvariants(rootDir, proto)
-
-	failedDiskSet := make(map[string]struct{})
-	for _, disk := range proto.Disks {
-		if disk.HealthStatus != "" && disk.HealthStatus != "online" {
-			failedDiskSet[disk.DiskID] = struct{}{}
+func allRecoverableMissingFileErrors(errs []string) bool {
+	if len(errs) == 0 {
+		return false
+	}
+	for _, err := range errs {
+		if !isRecoverableMissingFileError(err) {
+			return false
 		}
 	}
-	for _, diskID := range analysis.FailedDisks {
-		failedDiskSet[diskID] = struct{}{}
-	}
-	failedDisks := make([]string, 0, len(failedDiskSet))
-	for diskID := range failedDiskSet {
-		failedDisks = append(failedDisks, diskID)
-	}
-
-	rebuildProgressFiles, _ := filepath.Glob(filepath.Join(rootDir, "rebuild-*.progress"))
-
-	metadataState := "ok"
-	if _, err := metadata.NewStore(metadataPath).Load(); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			metadataState = "missing"
-		} else {
-			metadataState = "corrupt"
-		}
-	} else if len(recovery.RecoveredTxIDs) > 0 || len(recovery.AbortedTxIDs) > 0 {
-		metadataState = "reconciled-from-journal"
-	}
-
-	journalState := "clean"
-	if startupError != "" && strings.Contains(startupError, "journal:") {
-		journalState = "corrupt"
-	} else if summary.RequiresReplay {
-		journalState = "dirty"
-	}
-
-	parityIssues := make([]string, 0)
-	corruptionFindings := make([]string, 0)
-	for _, v := range violations {
-		switch v.Code {
-		case "P2", "P3":
-			parityIssues = append(parityIssues, v.Error())
-			corruptionFindings = append(corruptionFindings, v.Error())
-		case "E1", "J1":
-			corruptionFindings = append(corruptionFindings, v.Error())
-		}
-	}
-	corruptionFindings = append(corruptionFindings, formatResult.Errors...)
-
-	var lastScrub any
-	if n := len(proto.ScrubHistory); n > 0 {
-		lastScrub = proto.ScrubHistory[n-1]
-	}
-
-	return map[string]any{
-		"status":                    status,
-		"startup_admission":         admission,
-		"pool_state":                status,
-		"metadata_state":            metadataState,
-		"journal_state":             journalState,
-		"journal_requires_replay":   summary.RequiresReplay,
-		"interrupted_transactions":  summary.IncompleteTxIDs,
-		"recovered_transactions":    recovery.RecoveredTxIDs,
-		"aborted_transactions":      recovery.AbortedTxIDs,
-		"failed_disks":              failedDisks,
-		"rebuild_in_progress_files": rebuildProgressFiles,
-		"last_scrub":                lastScrub,
-		"parity_mismatch_state":     len(parityIssues) > 0,
-		"parity_issues":             parityIssues,
-		"corruption_findings":       corruptionFindings,
-		"format_warnings":           formatResult.Warnings,
-		"multi_disk_failure":        analysis,
-		"startup_error":             startupError,
-		"metadata_path":             metadataPath,
-		"journal_path":              journalPath,
-	}
-}
-
-func newMux(state *runtimeState) *http.ServeMux {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		state.mu.RLock()
-		scrubHistory := state.Prototype.ScrubHistory
-		poolExtentSize := state.Prototype.Pool.ExtentSizeBytes
-		poolParityMode := state.Prototype.Pool.ParityMode
-		metadataPath := state.MetadataPath
-		managedFiles := len(state.Prototype.Files)
-		allocatedExtents := len(state.Prototype.Extents)
-		recoveredTxs := len(state.Recovery.RecoveredTxIDs)
-		journalPath := state.JournalPath
-		journalRecords := state.JournalSummary.TotalRecords
-		journalReplay := state.JournalSummary.RequiresReplay
-		startedAt := state.StartedAt
-		startupError := state.StartupError
-		status := state.healthStatus()
-		state.mu.RUnlock()
-
-		var lastScrub any
-		if len(scrubHistory) > 0 {
-			lastScrub = scrubHistory[len(scrubHistory)-1]
-		}
-
-		state.mu.RLock()
-		failedDisks := 0
-		parityIssues := 0
-		for _, disk := range state.Prototype.Disks {
-			if disk.HealthStatus != "online" {
-				failedDisks++
-			}
-		}
-		for _, group := range state.Prototype.ParityGroups {
-			if group.ParityChecksum == "" {
-				parityIssues++
-			}
-		}
-		state.mu.RUnlock()
-
-		scrubFailures := 0
-		rebuildFailures := 0
-		metadataIssues := 0
-		for i := len(scrubHistory) - 1; i >= 0 && scrubFailures+rebuildFailures < 10; i-- {
-			if scrubHistory[i].FailedCount > 0 {
-				scrubFailures++
-			}
-		}
-
-		alertLevel := "ok"
-		if failedDisks > 0 || parityIssues > 0 || scrubFailures > 0 {
-			alertLevel = "warning"
-		}
-		if startupError != "" {
-			alertLevel = "critical"
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"name":                    "rtparityd",
-			"status":                  status,
-			"alert_level":             alertLevel,
-			"version":                 "0.1.0-prototype",
-			"default_extent_bytes":    poolExtentSize,
-			"parity_mode":             poolParityMode,
-			"metadata_path":           metadataPath,
-			"managed_files":           managedFiles,
-			"allocated_extents":       allocatedExtents,
-			"recovered_transactions":  recoveredTxs,
-			"journal_path":            journalPath,
-			"journal_records":         journalRecords,
-			"journal_requires_replay": journalReplay,
-			"scrub_runs":              len(scrubHistory),
-			"last_scrub":              lastScrub,
-			"failed_disks":            failedDisks,
-			"parity_issues":           parityIssues,
-			"scrub_failures":          scrubFailures,
-			"rebuild_failures":        rebuildFailures,
-			"metadata_issues":         metadataIssues,
-			"timestamp":               time.Now().UTC(),
-			"started_at":              startedAt,
-			"startup_error":           startupError,
-		})
-	})
-
-	mux.HandleFunc("/v1/pools", func(w http.ResponseWriter, r *http.Request) {
-		state.mu.RLock()
-		pool := state.Prototype.Pool
-		state.mu.RUnlock()
-		writeJSON(w, http.StatusOK, []metadata.Pool{pool})
-	})
-
-	mux.HandleFunc("/v1/design", func(w http.ResponseWriter, r *http.Request) {
-		state.mu.RLock()
-		extentSize := state.Prototype.Pool.ExtentSizeBytes
-		parityMode := state.Prototype.Pool.ParityMode
-		state.mu.RUnlock()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"language":             "go",
-			"extent_size_bytes":    extentSize,
-			"parity_mode":          parityMode,
-			"max_parity_group":     8,
-			"metadata_device_hint": "dedicated SSD",
-			"journal_format":       journal.RecordMagic,
-		})
-	})
-
-	mux.HandleFunc("/v1/journal", func(w http.ResponseWriter, r *http.Request) {
-		state.mu.RLock()
-		journalPath := state.JournalPath
-		status := state.healthStatus()
-		recovery := state.Recovery
-		summary := state.JournalSummary
-		startupError := state.StartupError
-		state.mu.RUnlock()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"journal_path":  journalPath,
-			"status":        status,
-			"recovery":      recovery,
-			"summary":       summary,
-			"startup_error": startupError,
-		})
-	})
-
-	mux.HandleFunc("/v1/metadata", func(w http.ResponseWriter, r *http.Request) {
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		status := state.healthStatus()
-		files := state.Prototype.Files
-		extents := state.Prototype.Extents
-		parityGroups := state.Prototype.ParityGroups
-		transactions := state.Prototype.Transactions
-		scrubHistory := state.Prototype.ScrubHistory
-		startupError := state.StartupError
-		state.mu.RUnlock()
-		writeJSON(w, http.StatusOK, map[string]any{
-			"metadata_path": metadataPath,
-			"status":        status,
-			"files":         files,
-			"extents":       extents,
-			"parity_groups": parityGroups,
-			"transactions":  transactions,
-			"scrub_history": scrubHistory,
-			"startup_error": startupError,
-		})
-	})
-
-	mux.HandleFunc("/v1/diagnostics", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
-				"error": "method not allowed",
-			})
-			return
-		}
-		writeJSON(w, http.StatusOK, diagnosticsView(state))
-	})
-
-	mux.HandleFunc("/v1/read", func(w http.ResponseWriter, r *http.Request) {
-		logicalPath := r.URL.Query().Get("path")
-		if logicalPath == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "missing required query parameter: path",
-			})
-			return
-		}
-
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		journalPath := state.JournalPath
-		state.mu.RUnlock()
-
-		result, err := journal.NewCoordinator(metadataPath, journalPath).ReadFile(logicalPath)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "file not found") {
-				status = http.StatusNotFound
-			}
-			writeJSON(w, status, map[string]any{
-				"path":  logicalPath,
-				"error": err.Error(),
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"path":              logicalPath,
-			"verified":          result.Verified,
-			"bytes_read":        result.BytesRead,
-			"content_checksum":  result.ContentChecksum,
-			"healed_extent_ids": result.HealedExtentIDs,
-			"file":              result.File,
-		})
-	})
-
-	mux.HandleFunc("/v1/scrub/history", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", "GET")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
-				"error": "method not allowed",
-			})
-			return
-		}
-
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		poolName := state.Prototype.Pool.Name
-		state.mu.RUnlock()
-
-		if loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName)); err == nil {
-			state.mu.Lock()
-			state.Prototype = loadedState
-			state.mu.Unlock()
-		}
-
-		state.mu.RLock()
-		scrubHistory := state.Prototype.ScrubHistory
-		state.mu.RUnlock()
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"metadata_path": metadataPath,
-			"count":         len(scrubHistory),
-			"history":       scrubHistory,
-		})
-	})
-
-	mux.HandleFunc("/v1/scrub", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodPost {
-			w.Header().Set("Allow", "GET, POST")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
-				"error": "method not allowed",
-			})
-			return
-		}
-
-		repairValue := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("repair")))
-		repair := repairValue == "true" || repairValue == "1" || (repairValue == "" && r.Method == http.MethodPost)
-
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		journalPath := state.JournalPath
-		poolName := state.Prototype.Pool.Name
-		state.mu.RUnlock()
-
-		result, err := journal.NewCoordinator(metadataPath, journalPath).Scrub(repair)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"repair": repair,
-				"error":  err.Error(),
-			})
-			return
-		}
-
-		if loadedState, err := metadata.NewStore(metadataPath).LoadOrCreate(metadata.PrototypeState(poolName)); err == nil {
-			state.mu.Lock()
-			state.Prototype = loadedState
-			state.mu.Unlock()
-		}
-		if summary, err := journal.NewStore(journalPath).Replay(); err == nil {
-			state.mu.Lock()
-			state.JournalSummary = summary
-			state.mu.Unlock()
-		}
-
-		writeJSON(w, http.StatusOK, result)
-	})
-
-	mux.HandleFunc("/v1/rebuild/all", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodPost {
-			w.Header().Set("Allow", "GET, POST")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
-				"error": "method not allowed",
-			})
-			return
-		}
-
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		journalPath := state.JournalPath
-		state.mu.RUnlock()
-
-		result, err := journal.NewCoordinator(metadataPath, journalPath).RebuildAllDataDisks()
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{
-				"error": err.Error(),
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, result)
-	})
-
-	mux.HandleFunc("/v1/rebuild", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet && r.Method != http.MethodPost {
-			w.Header().Set("Allow", "GET, POST")
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
-				"error": "method not allowed",
-			})
-			return
-		}
-
-		diskID := strings.TrimSpace(r.URL.Query().Get("disk"))
-		if diskID == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{
-				"error": "missing required query parameter: disk",
-			})
-			return
-		}
-
-		state.mu.RLock()
-		metadataPath := state.MetadataPath
-		journalPath := state.JournalPath
-		state.mu.RUnlock()
-
-		result, err := journal.NewCoordinator(metadataPath, journalPath).RebuildDataDisk(diskID)
-		if err != nil {
-			status := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "no extents mapped") {
-				status = http.StatusNotFound
-			}
-			writeJSON(w, status, map[string]any{
-				"disk":  diskID,
-				"error": err.Error(),
-			})
-			return
-		}
-
-		writeJSON(w, http.StatusOK, result)
-	})
-
-	return mux
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(value)
+	return true
 }

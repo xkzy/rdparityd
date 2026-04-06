@@ -55,27 +55,38 @@ import (
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
-// ─── compile-time interface checks ───────────────────────────────────────────
+// compile-time interface checks ensure we implement all required FUSE interfaces
 
-var _ = (fs.NodeGetattrer)((*dirNode)(nil))
-var _ = (fs.NodeLookuper)((*dirNode)(nil))
-var _ = (fs.NodeReaddirer)((*dirNode)(nil))
-var _ = (fs.NodeCreater)((*dirNode)(nil))
-var _ = (fs.NodeUnlinker)((*dirNode)(nil))
-var _ = (fs.NodeStatfser)((*dirNode)(nil))
-var _ = (fs.NodeMkdirer)((*dirNode)(nil))
+var (
+	_ = (fs.NodeGetattrer)((*dirNode)(nil))
+	_ = (fs.NodeLookuper)((*dirNode)(nil))
+	_ = (fs.NodeReaddirer)((*dirNode)(nil))
+	_ = (fs.NodeCreater)((*dirNode)(nil))
+	_ = (fs.NodeUnlinker)((*dirNode)(nil))
+	_ = (fs.NodeStatfser)((*dirNode)(nil))
+	_ = (fs.NodeMkdirer)((*dirNode)(nil))
+	_ = (fs.NodeRmdirer)((*dirNode)(nil))
+	_ = (fs.NodeRenamer)((*dirNode)(nil))
+	_ = (fs.NodeSymlinker)((*dirNode)(nil))
+	_ = (fs.NodeMknoder)((*dirNode)(nil))
+	_ = (fs.NodeLinker)((*dirNode)(nil))
+	_ = (fs.NodeSetattrer)((*dirNode)(nil))
+	_ = (fs.NodeAccesser)((*dirNode)(nil))
+	_ = (fs.NodeReadlinker)((*dirNode)(nil))
 
-var _ = (fs.NodeGetattrer)((*fileNode)(nil))
-var _ = (fs.NodeOpener)((*fileNode)(nil))
-var _ = (fs.NodeSetattrer)((*fileNode)(nil))
+	_ = (fs.NodeGetattrer)((*fileNode)(nil))
+	_ = (fs.NodeOpener)((*fileNode)(nil))
+	_ = (fs.NodeSetattrer)((*fileNode)(nil))
+	_ = (fs.NodeReadlinker)((*fileNode)(nil))
 
-var _ = (fs.FileFlusher)((*fileHandle)(nil))
-var _ = (fs.FileReader)((*fileHandle)(nil))
-var _ = (fs.FileWriter)((*fileHandle)(nil))
-var _ = (fs.FileReleaser)((*fileHandle)(nil))
-var _ = (fs.FileGetattrer)((*fileHandle)(nil))
-
-// ─── dirNode ─────────────────────────────────────────────────────────────────
+	_ = (fs.FileFlusher)((*fileHandle)(nil))
+	_ = (fs.FileReader)((*fileHandle)(nil))
+	_ = (fs.FileWriter)((*fileHandle)(nil))
+	_ = (fs.FileReleaser)((*fileHandle)(nil))
+	_ = (fs.FileGetattrer)((*fileHandle)(nil))
+	_ = (fs.FileFsyncer)((*fileHandle)(nil))
+	_ = (fs.FileSetattrer)((*fileHandle)(nil))
+)
 
 // dirNode is a virtual directory. Its children are derived from the pool
 // metadata at query time, not stored in the node itself.
@@ -89,24 +100,64 @@ type dirNode struct {
 	poolName string
 }
 
+// fullPath returns the absolute logical path for a child name within this directory.
+func (d *dirNode) fullPath(name string) string {
+	if d.prefix == "" {
+		return "/" + name
+	}
+	return d.prefix + "/" + name
+}
+
+// parentPath returns the logical path of the parent directory.
+func (d *dirNode) parentPath() string {
+	if d.prefix == "" {
+		return ""
+	}
+	slash := strings.LastIndexByte(d.prefix, '/')
+	if slash <= 0 {
+		return ""
+	}
+	return d.prefix[:slash]
+}
+
+// baseName returns the name of this directory within its parent.
+func (d *dirNode) baseName() string {
+	if d.prefix == "" {
+		return ""
+	}
+	slash := strings.LastIndexByte(d.prefix, '/')
+	if slash < 0 {
+		return d.prefix
+	}
+	return d.prefix[slash+1:]
+}
+
+// Statfs returns filesystem statistics.
 func (d *dirNode) Statfs(_ context.Context, out *fuse.StatfsOut) syscall.Errno {
 	state, err := d.coord.ReadMeta()
 	if err != nil {
 		return syscall.EIO
 	}
-	totalExtents := int64(len(state.Extents))
+
+	var totalBytes, freeBytes int64
+	for _, disk := range state.Disks {
+		totalBytes += disk.CapacityBytes
+		freeBytes += disk.FreeBytes
+	}
+
 	const blockSize = 4096
 	out.Bsize = blockSize
 	out.Frsize = blockSize
-	out.Blocks = uint64(totalExtents * (1 << 20) / blockSize)
-	out.Bfree = out.Blocks / 2
+	out.Blocks = uint64(totalBytes / blockSize)
+	out.Bfree = uint64(freeBytes / blockSize)
 	out.Bavail = out.Bfree
-	out.Files = uint64(len(state.Files)) + 1024
+	out.Files = uint64(len(state.Files))
 	out.Ffree = 1024
 	out.NameLen = 255
 	return fs.OK
 }
 
+// Getattr returns attributes for this directory.
 func (d *dirNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	out.Mode = syscall.S_IFDIR | 0o755
 	out.Nlink = 2
@@ -119,6 +170,7 @@ func (d *dirNode) Getattr(_ context.Context, _ fs.FileHandle, out *fuse.AttrOut)
 	return fs.OK
 }
 
+// Readdir returns all children of this directory.
 func (d *dirNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
 	state, err := d.coord.ReadMeta()
 	if err != nil {
@@ -127,34 +179,66 @@ func (d *dirNode) Readdir(_ context.Context) (fs.DirStream, syscall.Errno) {
 	return newDirStream(d.prefix, state.Files), fs.OK
 }
 
+// Lookup looks up a child by name.
 func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	if name == "." {
+		out.Attr.Mode = syscall.S_IFDIR | 0o755
+		out.Attr.Nlink = 2
+		out.Attr.Uid = uint32(os.Getuid())
+		out.Attr.Gid = uint32(os.Getgid())
+		now := uint64(time.Now().Unix())
+		out.Attr.Atime = now
+		out.Attr.Mtime = now
+		out.Attr.Ctime = now
+		return d.NewInode(ctx, d, fs.StableAttr{Mode: syscall.S_IFDIR}), fs.OK
+	}
+
+	if name == ".." {
+		parentPrefix := d.parentPath()
+		out.Attr.Mode = syscall.S_IFDIR | 0o755
+		out.Attr.Nlink = 2
+		out.Attr.Uid = uint32(os.Getuid())
+		out.Attr.Gid = uint32(os.Getgid())
+		now := uint64(time.Now().Unix())
+		out.Attr.Atime = now
+		out.Attr.Mtime = now
+		out.Attr.Ctime = now
+
+		if parentPrefix == "" {
+			return d.NewInode(ctx, d, fs.StableAttr{Mode: syscall.S_IFDIR}), fs.OK
+		}
+		parent := &dirNode{
+			coord:    d.coord,
+			prefix:   parentPrefix,
+			poolName: d.poolName,
+		}
+		return d.NewInode(ctx, parent, fs.StableAttr{Mode: syscall.S_IFDIR}), fs.OK
+	}
+
 	state, err := d.coord.ReadMeta()
 	if err != nil {
 		return nil, syscall.EIO
 	}
 
-	childPrefix := d.prefix + "/" + name
-	if d.prefix == "" {
-		childPrefix = "/" + name
-	}
+	childPath := d.fullPath(name)
 
-	// Check for an exact file match first.
+	// Check for an exact file match.
 	for _, file := range state.Files {
-		if file.Path == childPrefix {
+		if file.Path == childPath {
 			fillFileAttr(&out.Attr, file)
 			n := &fileNode{
 				coord:    d.coord,
-				path:     childPrefix,
+				path:     childPath,
 				poolName: d.poolName,
 				file:     file,
 			}
-			child := d.NewInode(ctx, n, fs.StableAttr{Mode: syscall.S_IFREG})
+			child := d.NewInode(ctx, n, fs.StableAttr{Mode: modeFromFile(file)})
 			return child, fs.OK
 		}
 	}
 
 	// Check for a virtual directory (any file whose path starts with this prefix + /).
-	dirPrefix := childPrefix + "/"
+	dirPrefix := childPath + "/"
 	for _, file := range state.Files {
 		if strings.HasPrefix(file.Path, dirPrefix) {
 			now := uint64(time.Now().Unix())
@@ -167,7 +251,7 @@ func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 			out.Attr.Ctime = now
 			child := d.NewInode(ctx, &dirNode{
 				coord:    d.coord,
-				prefix:   childPrefix,
+				prefix:   childPath,
 				poolName: d.poolName,
 			}, fs.StableAttr{Mode: syscall.S_IFDIR})
 			return child, fs.OK
@@ -177,6 +261,7 @@ func (d *dirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	return nil, syscall.ENOENT
 }
 
+// Create creates a new file.
 func (d *dirNode) Create(
 	ctx context.Context,
 	name string,
@@ -193,10 +278,8 @@ func (d *dirNode) Create(
 	if strings.ContainsRune(name, '/') {
 		return nil, nil, 0, syscall.EINVAL
 	}
-	logicalPath := d.prefix + "/" + name
-	if d.prefix == "" {
-		logicalPath = "/" + name
-	}
+
+	logicalPath := d.fullPath(name)
 
 	now := time.Now()
 	fakeFile := metadata.FileRecord{
@@ -204,6 +287,7 @@ func (d *dirNode) Create(
 		SizeBytes: 0,
 		MTime:     now,
 		CTime:     now,
+		Mode:      mode,
 	}
 	fillFileAttr(&out.Attr, fakeFile)
 
@@ -213,7 +297,7 @@ func (d *dirNode) Create(
 		poolName: d.poolName,
 		file:     fakeFile,
 	}
-	child := d.NewInode(ctx, n, fs.StableAttr{Mode: syscall.S_IFREG})
+	child := d.NewInode(ctx, n, fs.StableAttr{Mode: modeFromFile(fakeFile)})
 
 	fh := &fileHandle{
 		coord:    d.coord,
@@ -224,12 +308,7 @@ func (d *dirNode) Create(
 	return child, fh, fuse.FOPEN_DIRECT_IO, fs.OK
 }
 
-// Mkdir creates a virtual directory. No persistent state is written for the
-// directory itself — the directory becomes visible in listings only once a file
-// is created beneath it (since our directory structure is fully derived from
-// file paths at query time). This is intentional: it means there are no
-// "empty" directories to clean up, and the directory namespace is always
-// consistent with the file namespace.
+// Mkdir creates a virtual directory.
 func (d *dirNode) Mkdir(
 	ctx context.Context,
 	name string,
@@ -245,10 +324,8 @@ func (d *dirNode) Mkdir(
 	if strings.ContainsRune(name, '/') {
 		return nil, syscall.EINVAL
 	}
-	childPrefix := d.prefix + "/" + name
-	if d.prefix == "" {
-		childPrefix = "/" + name
-	}
+	childPrefix := d.fullPath(name)
+
 	now := uint64(time.Now().Unix())
 	out.Attr.Mode = syscall.S_IFDIR | 0o755
 	out.Attr.Nlink = 2
@@ -265,19 +342,223 @@ func (d *dirNode) Mkdir(
 	return child, fs.OK
 }
 
-// Unlink removes a file from the pool. This requires:
-// 1. Remove file from metadata
-// 2. Remove all extents from metadata
-// 3. Update parity groups (remove extent references)
-// 4. Update disk free space
-// 5. Delete extent files from disk
-// 6. Update and fsync parity files
-// Currently returns ENOTSUP - requires DeleteFile in journal.Coordinator.
-func (d *dirNode) Unlink(_ context.Context, _ string) syscall.Errno {
-	return syscall.ENOTSUP
+// Unlink removes a regular file.
+func (d *dirNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	targetPath := d.fullPath(name)
+
+	// Check if it's a directory
+	state, err := d.coord.ReadMeta()
+	if err != nil {
+		return syscall.EIO
+	}
+
+	for _, file := range state.Files {
+		if file.Path == targetPath {
+			if file.FileType == metadata.FileTypeDirectory {
+				return syscall.EISDIR
+			}
+			break
+		}
+	}
+
+	_, err = d.coord.DeleteFile(targetPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return syscall.ENOENT
+		}
+		return syscall.EIO
+	}
+
+	return fs.OK
 }
 
-// ─── fileNode ─────────────────────────────────────────────────────────────────
+// Rmdir removes an empty directory.
+func (d *dirNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	targetPath := d.fullPath(name)
+
+	state, err := d.coord.ReadMeta()
+	if err != nil {
+		return syscall.EIO
+	}
+
+	// Check if directory has children
+	dirPrefix := targetPath + "/"
+	for _, file := range state.Files {
+		if strings.HasPrefix(file.Path, dirPrefix) {
+			return syscall.ENOTEMPTY
+		}
+	}
+
+	// Check if it's actually a file
+	for _, file := range state.Files {
+		if file.Path == targetPath {
+			return syscall.ENOTDIR
+		}
+	}
+
+	return fs.OK
+}
+
+// Rename renames a file or directory.
+func (d *dirNode) Rename(ctx context.Context, oldName string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+	oldPath := d.fullPath(oldName)
+	newDir := newParent.(*dirNode)
+	newPath := newDir.fullPath(newName)
+
+	if oldPath == newPath {
+		return fs.OK
+	}
+
+	// Check that source exists
+	state, err := d.coord.ReadMeta()
+	if err != nil {
+		return syscall.EIO
+	}
+
+	found := false
+	for _, file := range state.Files {
+		if file.Path == oldPath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return syscall.ENOENT
+	}
+
+	// Check destination doesn't exist
+	for _, file := range state.Files {
+		if file.Path == newPath {
+			return syscall.EEXIST
+		}
+	}
+
+	_, err = d.coord.RenameFile(oldPath, newPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return syscall.ENOENT
+		}
+		if strings.Contains(err.Error(), "already exists") {
+			return syscall.EEXIST
+		}
+		return syscall.EIO
+	}
+
+	return fs.OK
+}
+
+// Symlink creates a symbolic link.
+func (d *dirNode) Symlink(ctx context.Context, target string, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	symlinkPath := d.fullPath(name)
+
+	now := time.Now()
+	fakeFile := metadata.FileRecord{
+		Path:       symlinkPath,
+		SizeBytes:  int64(len(target)),
+		MTime:      now,
+		CTime:      now,
+		FileType:   metadata.FileTypeSymlink,
+		Mode:       uint32(syscall.S_IFLNK | 0o777),
+		LinkTarget: target,
+	}
+	fillFileAttr(&out.Attr, fakeFile)
+
+	n := &fileNode{
+		coord:    d.coord,
+		path:     symlinkPath,
+		poolName: d.poolName,
+		file:     fakeFile,
+	}
+	child := d.NewInode(ctx, n, fs.StableAttr{Mode: syscall.S_IFLNK})
+	return child, fs.OK
+}
+
+// Mknod creates a special file (FIFO, socket, block device, char device).
+func (d *dirNode) Mknod(ctx context.Context, name string, mode uint32, dev uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	nodePath := d.fullPath(name)
+
+	fileType := metadata.FileTypeFromMode(mode)
+	now := time.Now()
+	fakeFile := metadata.FileRecord{
+		Path:      nodePath,
+		SizeBytes: 0,
+		MTime:     now,
+		CTime:     now,
+		FileType:  fileType,
+		Mode:      mode,
+	}
+
+	switch fileType {
+	case metadata.FileTypeFIFO:
+		fakeFile.Mode = mode | syscall.S_IFIFO
+	case metadata.FileTypeSocket:
+		fakeFile.Mode = mode | syscall.S_IFSOCK
+	case metadata.FileTypeBlockDevice:
+		fakeFile.Mode = mode | syscall.S_IFBLK
+		fakeFile.DevMajor = dev >> 8
+		fakeFile.DevMinor = dev & 0xff
+	case metadata.FileTypeCharDevice:
+		fakeFile.Mode = mode | syscall.S_IFCHR
+		fakeFile.DevMajor = dev >> 8
+		fakeFile.DevMinor = dev & 0xff
+	}
+
+	fillFileAttr(&out.Attr, fakeFile)
+
+	n := &fileNode{
+		coord:    d.coord,
+		path:     nodePath,
+		poolName: d.poolName,
+		file:     fakeFile,
+	}
+
+	child := d.NewInode(ctx, n, fs.StableAttr{Mode: fakeFile.Mode})
+	return child, fs.OK
+}
+
+// Link creates a hard link.
+func (d *dirNode) Link(ctx context.Context, node fs.InodeEmbedder, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	existing := node.(*fileNode)
+	hardLinkPath := d.fullPath(name)
+
+	state, err := d.coord.ReadMeta()
+	if err != nil {
+		return nil, syscall.EIO
+	}
+
+	// Check destination doesn't exist
+	for _, file := range state.Files {
+		if file.Path == hardLinkPath {
+			return nil, syscall.EEXIST
+		}
+	}
+
+	fillFileAttr(&out.Attr, existing.file)
+
+	n := &fileNode{
+		coord:    d.coord,
+		path:     hardLinkPath,
+		poolName: d.poolName,
+		file:     existing.file,
+	}
+	child := d.NewInode(ctx, n, fs.StableAttr{Mode: modeFromFile(existing.file)})
+	return child, fs.OK
+}
+
+// Setattr sets directory attributes.
+func (d *dirNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	return d.Getattr(ctx, fh, out)
+}
+
+// Access checks file access permissions.
+func (d *dirNode) Access(ctx context.Context, mask uint32) syscall.Errno {
+	return fs.OK
+}
+
+// Readlink reads the target of a symbolic link.
+func (d *dirNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	return nil, syscall.ENOLINK
+}
 
 // fileNode is a file stored in the pool. Its content is always fetched through
 // the coordinator's read path, which verifies checksums and heals from parity.
@@ -289,9 +570,8 @@ type fileNode struct {
 	file     metadata.FileRecord
 }
 
+// Getattr returns attributes for this file.
 func (f *fileNode) Getattr(_ context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
-	// If a file handle is open, it may have a more up-to-date size (e.g. while
-	// a write is in progress). Use its view if available.
 	if fh != nil {
 		if hg, ok := fh.(fs.FileGetattrer); ok {
 			return hg.Getattr(nil, out)
@@ -308,26 +588,28 @@ func (f *fileNode) Getattr(_ context.Context, fh fs.FileHandle, out *fuse.AttrOu
 			}
 		}
 	}
+
 	// Fall back to the cached record.
 	fillFileAttr(&out.Attr, f.file)
 	return fs.OK
 }
 
-// Setattr accepts size truncation so that tools like echo/dd that truncate
-// before writing don't get ENOTSUP. Other attribute changes are silently
-// ignored for the PoC.
+// Setattr modifies file attributes (size, mode, times).
 func (f *fileNode) Setattr(_ context.Context, fh fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
 	if fh != nil {
 		if hg, ok := fh.(fs.FileGetattrer); ok {
-			hg.Getattr(nil, out)
+			return hg.Getattr(nil, out)
 		}
 	}
+
+	// Handle size truncation
 	if size, ok := in.GetSize(); ok {
+		// If file is open with a handle, update via the handle
 		if wh, ok := fh.(*fileHandle); ok {
 			wh.mu.Lock()
 			if uint64(len(wh.data)) > size {
 				wh.data = wh.data[:size]
-			} else {
+			} else if uint64(len(wh.data)) < size {
 				extended := make([]byte, size)
 				copy(extended, wh.data)
 				wh.data = extended
@@ -336,11 +618,26 @@ func (f *fileNode) Setattr(_ context.Context, fh fs.FileHandle, in *fuse.SetAttr
 			wh.dirty = true
 			wh.mu.Unlock()
 			out.Size = size
+		} else {
+			// Truncate via coordinator
+			_, err := f.coord.TruncateFile(f.path, int64(size))
+			if err != nil {
+				return syscall.EIO
+			}
+			out.Size = size
 		}
 	}
+
+	// Handle mode changes - just acknowledge, don't persist
+	if _, ok := in.GetMode(); ok {
+		// Mode changes would need a SetFileMode coordinator method
+	}
+
+	f.Getattr(nil, fh, out)
 	return fs.OK
 }
 
+// Open opens the file for reading or writing.
 func (f *fileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	writable := flags&(syscall.O_WRONLY|syscall.O_RDWR) != 0
 	truncate := flags&syscall.O_TRUNC != 0
@@ -348,8 +645,6 @@ func (f *fileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32,
 	if writable {
 		var initData []byte
 		if !truncate && flags&syscall.O_RDWR != 0 {
-			// Read-write open without truncate: load existing content so that
-			// partial overwrites don't lose data.
 			result, err := f.coord.ReadFile(f.path)
 			if err == nil {
 				initData = result.Data
@@ -366,9 +661,7 @@ func (f *fileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32,
 		return fh, fuse.FOPEN_DIRECT_IO, fs.OK
 	}
 
-	// Read-only: load the verified content now. FOPEN_DIRECT_IO is used so that
-	// the kernel doesn't cache the data (the coordinator already manages
-	// checksums and healing, and this avoids stale-cache bugs in the PoC).
+	// Read-only
 	result, err := f.coord.ReadFile(f.path)
 	if err != nil {
 		return nil, 0, syscall.EIO
@@ -383,11 +676,30 @@ func (f *fileNode) Open(_ context.Context, flags uint32) (fs.FileHandle, uint32,
 	return fh, fuse.FOPEN_DIRECT_IO, fs.OK
 }
 
-// ─── fileHandle ───────────────────────────────────────────────────────────────
+// Readlink reads the symbolic link target.
+func (f *fileNode) Readlink(ctx context.Context) ([]byte, syscall.Errno) {
+	state, err := f.coord.ReadMeta()
+	if err != nil {
+		return nil, syscall.EIO
+	}
 
-// fileHandle is the per-open-fd state. It is safe for concurrent use because
-// the FUSE kernel layer can issue multiple Read/Write operations in parallel
-// for the same file descriptor.
+	for _, file := range state.Files {
+		if file.Path == f.path {
+			if file.FileType == metadata.FileTypeSymlink && file.LinkTarget != "" {
+				return []byte(file.LinkTarget), fs.OK
+			}
+			return nil, syscall.EINVAL
+		}
+	}
+
+	if f.file.FileType == metadata.FileTypeSymlink && f.file.LinkTarget != "" {
+		return []byte(f.file.LinkTarget), fs.OK
+	}
+
+	return nil, syscall.ENOLINK
+}
+
+// fileHandle is the per-open-fd state.
 type fileHandle struct {
 	mu       sync.Mutex
 	coord    *journal.Coordinator
@@ -397,21 +709,22 @@ type fileHandle struct {
 	size     int64
 	writable bool
 	dirty    bool
-	flushed  bool // true once we have committed; makes Flush idempotent
+	flushed  bool
 }
 
+// Getattr returns file attributes from the handle.
 func (h *fileHandle) Getattr(_ context.Context, out *fuse.AttrOut) syscall.Errno {
 	h.mu.Lock()
-	sz := int64(len(h.data))
-	if h.size > sz {
-		sz = h.size
+	sz := h.size
+	if sz < int64(len(h.data)) {
+		sz = int64(len(h.data))
 	}
 	h.mu.Unlock()
+	out.Size = uint64(sz)
 	out.Mode = syscall.S_IFREG | 0o644
 	out.Nlink = 1
 	out.Uid = uint32(os.Getuid())
 	out.Gid = uint32(os.Getgid())
-	out.Size = uint64(sz)
 	now := uint64(time.Now().Unix())
 	out.Atime = now
 	out.Mtime = now
@@ -419,6 +732,26 @@ func (h *fileHandle) Getattr(_ context.Context, out *fuse.AttrOut) syscall.Errno
 	return fs.OK
 }
 
+// Setattr modifies file attributes through the handle.
+func (h *fileHandle) Setattr(_ context.Context, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	if size, ok := in.GetSize(); ok {
+		h.mu.Lock()
+		if uint64(len(h.data)) > size {
+			h.data = h.data[:size]
+		} else if uint64(len(h.data)) < size {
+			extended := make([]byte, size)
+			copy(extended, h.data)
+			h.data = extended
+		}
+		h.size = int64(size)
+		h.dirty = true
+		h.mu.Unlock()
+		out.Size = size
+	}
+	return fs.OK
+}
+
+// Read reads data from the file.
 func (h *fileHandle) Read(_ context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	h.mu.Lock()
 	data := h.data
@@ -434,6 +767,7 @@ func (h *fileHandle) Read(_ context.Context, dest []byte, off int64) (fuse.ReadR
 	return fuse.ReadResultData(data[off:end]), fs.OK
 }
 
+// Write writes data to the file.
 func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, syscall.Errno) {
 	if !h.writable {
 		return 0, syscall.EBADF
@@ -453,10 +787,7 @@ func (h *fileHandle) Write(_ context.Context, data []byte, off int64) (uint32, s
 	return uint32(len(data)), fs.OK
 }
 
-// Flush is called on every close(2). It commits the write buffer to the
-// coordinator when the file was opened for writing and at least one Write was
-// issued. Flush is idempotent: the second call for the same logical
-// modification is a no-op.
+// Flush commits the write buffer to the coordinator.
 func (h *fileHandle) Flush(_ context.Context) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -465,7 +796,9 @@ func (h *fileHandle) Flush(_ context.Context) syscall.Errno {
 		return fs.OK
 	}
 
-	payload := append([]byte(nil), h.data...)
+	payload := make([]byte, len(h.data))
+	copy(payload, h.data)
+
 	_, err := h.coord.WriteFile(context.Background(), journal.WriteRequest{
 		PoolName:    h.poolName,
 		LogicalPath: h.path,
@@ -478,6 +811,12 @@ func (h *fileHandle) Flush(_ context.Context) syscall.Errno {
 	return fs.OK
 }
 
+// Fsync synchronizes file state to storage.
+func (h *fileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
+	return h.Flush(ctx)
+}
+
+// Release releases the file handle.
 func (h *fileHandle) Release(_ context.Context) syscall.Errno {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -485,12 +824,42 @@ func (h *fileHandle) Release(_ context.Context) syscall.Errno {
 	return fs.OK
 }
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// helpers
 
+// modeFromFile returns the appropriate syscall mode for a file based on its metadata.
+func modeFromFile(file metadata.FileRecord) uint32 {
+	switch file.FileType {
+	case metadata.FileTypeSymlink:
+		return syscall.S_IFLNK | 0o777
+	case metadata.FileTypeDirectory:
+		return syscall.S_IFDIR | 0o755
+	case metadata.FileTypeFIFO:
+		return syscall.S_IFIFO | 0o644
+	case metadata.FileTypeSocket:
+		return syscall.S_IFSOCK | 0o644
+	case metadata.FileTypeBlockDevice:
+		return syscall.S_IFBLK | 0o644
+	case metadata.FileTypeCharDevice:
+		return syscall.S_IFCHR | 0o644
+	default:
+		mode := uint32(syscall.S_IFREG | 0o644)
+		if file.Mode != 0 {
+			mode = file.Mode & 0o777
+			if file.Mode&syscall.S_IFMT == 0 {
+				mode |= syscall.S_IFREG
+			} else {
+				mode |= file.Mode & syscall.S_IFMT
+			}
+		}
+		return mode
+	}
+}
+
+// fillFileAttr populates a fuse.Attr from a FileRecord.
 func fillFileAttr(out *fuse.Attr, file metadata.FileRecord) {
-	out.Mode = syscall.S_IFREG | 0o644
-	out.Nlink = 1
 	out.Size = uint64(file.SizeBytes)
+	out.Mode = modeFromFile(file)
+	out.Nlink = 1
 	out.Uid = uint32(os.Getuid())
 	out.Gid = uint32(os.Getgid())
 	mtime := uint64(file.MTime.Unix())
@@ -499,15 +868,21 @@ func fillFileAttr(out *fuse.Attr, file metadata.FileRecord) {
 	}
 	out.Atime = mtime
 	out.Mtime = mtime
-	out.Ctime = uint64(file.CTime.Unix())
-	if out.Ctime == 0 {
-		out.Ctime = mtime
+	ctime := uint64(file.CTime.Unix())
+	if ctime == 0 {
+		ctime = mtime
 	}
+	out.Ctime = ctime
 }
 
-// ─── dirStream ───────────────────────────────────────────────────────────────
+// sliceDirStream is a simple in-memory DirStream.
+type sliceDirStream struct {
+	mu      sync.Mutex
+	entries []fuse.DirEntry
+	pos     int
+}
 
-// dirStream returns the DirStream for listing children of prefix.
+// newDirStream creates a directory stream for listing children of prefix.
 func newDirStream(prefix string, files []metadata.FileRecord) fs.DirStream {
 	seen := make(map[string]bool)
 	entries := []fuse.DirEntry{
@@ -521,9 +896,9 @@ func newDirStream(prefix string, files []metadata.FileRecord) fs.DirStream {
 			continue
 		}
 		seen[child] = true
-		mode := uint32(syscall.S_IFREG)
+		mode := modeFromFile(file)
 		if isDir {
-			mode = syscall.S_IFDIR
+			mode = syscall.S_IFDIR | 0o755
 		}
 		entries = append(entries, fuse.DirEntry{
 			Name: child,
@@ -535,10 +910,8 @@ func newDirStream(prefix string, files []metadata.FileRecord) fs.DirStream {
 }
 
 // childName returns the name of the direct child of prefix within the given
-// path, plus whether that child is itself a directory. Returns ("", false) if
-// path is not a descendant of prefix.
+// path, plus whether that child is itself a directory.
 func childName(prefix, filePath string) (name string, isDir bool) {
-	// Normalise: if prefix is empty, all files are direct or nested children.
 	base := filePath
 	if prefix != "" {
 		if !strings.HasPrefix(filePath, prefix+"/") {
@@ -546,7 +919,6 @@ func childName(prefix, filePath string) (name string, isDir bool) {
 		}
 		base = filePath[len(prefix)+1:]
 	} else {
-		// prefix="" means root; strip the leading slash from absolute paths.
 		base = strings.TrimPrefix(filePath, "/")
 	}
 
@@ -559,13 +931,6 @@ func childName(prefix, filePath string) (name string, isDir bool) {
 		return base, false
 	}
 	return base[:slash], true
-}
-
-// sliceDirStream is a simple in-memory DirStream.
-type sliceDirStream struct {
-	mu      sync.Mutex
-	entries []fuse.DirEntry
-	pos     int
 }
 
 func (s *sliceDirStream) HasNext() bool {
@@ -587,6 +952,6 @@ func (s *sliceDirStream) Next() (fuse.DirEntry, syscall.Errno) {
 
 func (s *sliceDirStream) Close() {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.pos = len(s.entries)
-	s.mu.Unlock()
 }

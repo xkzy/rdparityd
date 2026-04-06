@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -116,7 +117,7 @@ func loadScrubProgress(metadataPath string) (ScrubProgress, error) {
 			return ScrubProgress{}, fmt.Errorf("scrub progress: truncated extent length")
 		}
 		b := make([]byte, int(l))
-		if _, err := r.Read(b); err != nil {
+		if _, err := io.ReadFull(r, b); err != nil {
 			return ScrubProgress{}, fmt.Errorf("scrub progress: truncated extent id")
 		}
 		progress.CompletedExtents = append(progress.CompletedExtents, string(b))
@@ -128,7 +129,7 @@ func loadScrubProgress(metadataPath string) (ScrubProgress, error) {
 			return ScrubProgress{}, fmt.Errorf("scrub progress: truncated parity length")
 		}
 		b := make([]byte, int(l))
-		if _, err := r.Read(b); err != nil {
+		if _, err := io.ReadFull(r, b); err != nil {
 			return ScrubProgress{}, fmt.Errorf("scrub progress: truncated parity id")
 		}
 		progress.CompletedParityGroups = append(progress.CompletedParityGroups, string(b))

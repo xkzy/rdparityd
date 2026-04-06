@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,7 +14,7 @@ func TestI4_PostWriteParityReadback(t *testing.T) {
 
 	coord := NewCoordinator(metaPath, journalPath)
 	payload := []byte("test data for parity readback verification")
-	result, err := coord.WriteFile(WriteRequest{
+	result, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:    "test-i4",
 		LogicalPath: "/test/parity-readback.bin",
 		Payload:     payload,

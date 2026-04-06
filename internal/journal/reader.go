@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -205,7 +206,7 @@ func (c *Coordinator) readFileParallel(logicalPath string, state metadata.Sample
 
 	coord := NewReadCoordinator(scheduler, rootDir, state)
 
-	results, err := coord.ReadExtents(extents)
+	results, err := coord.ReadExtents(context.Background(), extents)
 	if err != nil {
 		return ReadResult{}, fmt.Errorf("parallel read extents: %w", err)
 	}

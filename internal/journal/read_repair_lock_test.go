@@ -1,6 +1,7 @@
 package journal
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,7 +17,7 @@ func TestReadRepairBlocksOnExclusiveOperationLock(t *testing.T) {
 	coord1 := NewCoordinator(metaPath, journalPath)
 	coord2 := NewCoordinator(metaPath, journalPath)
 
-	writeResult, err := coord1.WriteFile(WriteRequest{
+	writeResult, err := coord1.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "read-repair-lock",
 		LogicalPath:    "/test/repair.bin",
 		AllowSynthetic: true,
@@ -78,7 +79,7 @@ func TestReadRepairAndConcurrentWriteRemainConsistent(t *testing.T) {
 	journalPath := filepath.Join(dir, "journal.log")
 	coord := NewCoordinator(metaPath, journalPath)
 
-	writeResult, err := coord.WriteFile(WriteRequest{
+	writeResult, err := coord.WriteFile(context.Background(), WriteRequest{
 		PoolName:       "read-repair-consistency",
 		LogicalPath:    "/test/repair.bin",
 		AllowSynthetic: true,
@@ -109,7 +110,7 @@ func TestReadRepairAndConcurrentWriteRemainConsistent(t *testing.T) {
 
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := NewCoordinator(metaPath, journalPath).WriteFile(WriteRequest{
+		_, err := NewCoordinator(metaPath, journalPath).WriteFile(context.Background(), WriteRequest{
 			PoolName:       "read-repair-consistency",
 			LogicalPath:    "/test/new.bin",
 			AllowSynthetic: true,

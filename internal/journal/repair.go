@@ -60,10 +60,6 @@ func parityRepairPath(groupID string) string {
 	return repairPathPrefixParity + groupID
 }
 
-func shouldStopRepairAfter(target, current State) bool {
-	return target != "" && target == current
-}
-
 func repairBaseRecord(poolName, logicalPath string, extents []metadata.Extent) Record {
 	affected := make([]string, 0, len(extents))
 	for _, extent := range extents {
@@ -79,6 +75,19 @@ func repairBaseRecord(poolName, logicalPath string, extents []metadata.Extent) R
 	}
 }
 
+// appendRepairRecord appends a journal record with the given state and checks
+// for injected crash after. Returns the updated record on success.
+func appendRepairRecord(journal *Store, record Record, state State, failAfter State) (Record, error) {
+	updated := withState(record, state)
+	if _, err := journal.Append(updated); err != nil {
+		return Record{}, fmt.Errorf("append repair %s record: %w", state, err)
+	}
+	if shouldStopAfter(failAfter, state) {
+		return Record{}, fmt.Errorf("injected repair crash after %s", state)
+	}
+	return updated, nil
+}
+
 func runExtentRepair(metadataPath string, journal *Store, state metadata.SampleState, extent metadata.Extent, failAfter State) ([]byte, bool, error) {
 	rootDir := filepath.Dir(metadataPath)
 	rebuilt, err := reconstructExtent(rootDir, state, extent)
@@ -90,7 +99,7 @@ func runExtentRepair(metadataPath string, journal *Store, state metadata.SampleS
 	if _, err := journal.Append(withState(record, StatePrepared)); err != nil {
 		return nil, false, fmt.Errorf("append extent repair prepared record: %w", err)
 	}
-	if shouldStopRepairAfter(failAfter, StatePrepared) {
+	if shouldStopAfter(failAfter, StatePrepared) {
 		return nil, false, fmt.Errorf("injected repair crash after %s", StatePrepared)
 	}
 
@@ -107,7 +116,7 @@ func runExtentRepair(metadataPath string, journal *Store, state metadata.SampleS
 	if _, err := journal.Append(withState(record, StateDataWritten)); err != nil {
 		return nil, false, fmt.Errorf("append extent repair data-written record: %w", err)
 	}
-	if shouldStopRepairAfter(failAfter, StateDataWritten) {
+	if shouldStopAfter(failAfter, StateDataWritten) {
 		return nil, false, fmt.Errorf("injected repair crash after %s", StateDataWritten)
 	}
 
@@ -136,7 +145,7 @@ func runParityRepair(metadataPath string, journal *Store, state *metadata.Sample
 	if _, err := journal.Append(withState(record, StatePrepared)); err != nil {
 		return false, fmt.Errorf("append parity repair prepared record: %w", err)
 	}
-	if shouldStopRepairAfter(failAfter, StatePrepared) {
+	if shouldStopAfter(failAfter, StatePrepared) {
 		return false, fmt.Errorf("injected repair crash after %s", StatePrepared)
 	}
 
@@ -149,7 +158,7 @@ func runParityRepair(metadataPath string, journal *Store, state *metadata.Sample
 	if _, err := journal.Append(withState(record, StateDataWritten)); err != nil {
 		return false, fmt.Errorf("append parity repair data-written record: %w", err)
 	}
-	if shouldStopRepairAfter(failAfter, StateDataWritten) {
+	if shouldStopAfter(failAfter, StateDataWritten) {
 		return false, fmt.Errorf("injected repair crash after %s", StateDataWritten)
 	}
 

@@ -22,7 +22,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +31,7 @@ import (
 	"golang.org/x/sys/unix"
 	"lukechampine.com/blake3"
 
+	"github.com/xkzy/rdparityd/internal/logger"
 	"github.com/xkzy/rdparityd/internal/metadata"
 )
 
@@ -237,7 +237,7 @@ func (c *Coordinator) publishCommittedState(state metadata.SampleState) {
 	c.cachedState = &state
 	c.cachedStateSet = true
 	if err := c.journal.CompactIfClean(); err != nil {
-		log.Printf("warning: CompactIfClean failed: %v", err)
+		logger.Warn("CompactIfClean failed", "error", err)
 	}
 }
 

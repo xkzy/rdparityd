@@ -28,6 +28,8 @@ vendor/
 .claude/
 .context/
 .pi/
+AGENTS.md
+CLAUDE.md
 
 # OS
 .DS_Store

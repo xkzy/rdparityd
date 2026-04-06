@@ -358,7 +358,7 @@ func extentsForParityGroups(state metadata.SampleState, groupIDs map[string]stru
 		return nil
 	}
 
-	extents := make([]metadata.Extent, 0)
+	extents := make([]metadata.Extent, 0, len(state.Extents))
 	for _, extent := range state.Extents {
 		if _, ok := groupIDs[extent.ParityGroupID]; ok {
 			extents = append(extents, extent)
